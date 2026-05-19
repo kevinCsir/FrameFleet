@@ -1,7 +1,8 @@
 # Future Work
 
 This file tracks features and optimizations that are intentionally deferred from
-the first Entry Server implementation.
+the first Entry Server implementation, plus migration notes that should not be
+lost when moving the project forward.
 
 ## Worker Liveness Index
 
@@ -62,20 +63,53 @@ Current implementation:
 
 - Entry reserves worker slots when assigning `process_segment` tasks from
   `POST /jobs`.
+- Internal jobs also reserve slots on the source worker, because Entry is the
+  global task ledger even when a worker processes its own video locally.
+- Entry reserves worker slot and estimated disk bytes when assigning
+  `assemble_gif` work.
 - Heartbeat-reported running task counts are stored as observed worker state,
   but they do not overwrite Entry's scheduling reservations.
+- `completed` and `failed` release reserved slots for `process_segment` tasks.
+- `assembled` success/failure releases the assemble worker's slot and disk
+  reservation.
 
 Deferred improvement:
 
-- Release reservations on task accepted/completed/failed/timeout.
 - Add timeout handling for tasks that remain assigned but are never accepted by
   the target worker.
+- Add timeout handling for tasks that remain running but never complete.
+- Add retry policy for failed or timed-out task reservations.
+
+## Disk Accounting
+
+Current implementation:
+
+- Worker heartbeat reports observed `disk_free_bytes`.
+- Entry keeps `ReservedDiskBytes` for assemble work.
+- Assemble worker selection requires:
+  `disk_free_bytes - reserved_disk_bytes >= estimated_required_disk_bytes`.
+- Assemble disk estimate is currently:
+  - `sum(segment output_size_bytes) * 2 * 1.2` when all segment output sizes are
+    known
+  - otherwise `job.total_size_bytes * 1.2`
+- If an assemble worker returns `insufficient_storage`, Entry updates the
+  worker's observed free disk when the response includes `disk_free_bytes`.
+
+Deferred improvement:
+
+- Separate persistent artifact/result usage from temporary working-space
+  reservation.
+- Add cleanup events so Entry can shrink persistent disk accounting after
+  artifact/result deletion.
+- Track disk estimate corrections by task type and codec profile.
+- Add a safety margin configuration instead of a hard-coded 20% margin.
 
 ## Persistence
 
 Current implementation:
 
-- Worker registry state is in memory only.
+- Worker registry, jobs, tasks, status transitions, reservations, and result
+  metadata are in memory only.
 
 Deferred improvement:
 
@@ -87,37 +121,119 @@ Deferred improvement:
   - task status transitions
   - segment artifact manifests
   - final GIF result metadata
+  - job identity index: `source_worker_address + video_name -> job_id`
+  - reservation records, especially disk reservations
+  - notification attempts and outcomes
 
 The in-memory service layer should remain the main API used by handlers so that
 database integration does not leak into HTTP handlers.
+
+## Migration Notes
+
+When migrating or restarting Entry Server, the current in-memory state is lost.
+Before running this in a durable environment, persist enough data to rebuild:
+
+- registered workers and their last known addresses/capabilities
+- job records, including `mode`, `source_worker_address`, `video_name`, and the
+  identity key
+- task records and current task status
+- reserved slot and reserved disk state
+- final job result metadata
+- failed task/job reason and retryability
+- notification state for best-effort source-worker result notifications
+
+The current code intentionally keeps the service layer in front of storage so
+that GORM can be added without changing handler contracts.
 
 ## Job And Task Lifecycle
 
 Current implementation:
 
-- `POST /jobs` creates a job and `process_segment` tasks when enough worker
-  slots are available.
+- `POST /jobs` supports `mode=internal|external`.
+- Jobs are idempotent by `source_worker_address + video_name`.
+- Duplicate jobs return `already_exists` with the existing job ID and status.
+- External jobs create `process_segment` tasks and assign them to available
+  workers.
+- Internal jobs create `process_segment` tasks assigned to the source worker.
 - If resources are insufficient, Entry returns available worker candidates but
   does not create a partial job.
+- `POST /tasks/:task_id/accepted` marks a segment task running.
+- `POST /tasks/:task_id/completed` marks a segment task completed, stores basic
+  output statistics, releases the segment slot, and triggers assemble scheduling
+  when all segments are complete.
+- `POST /tasks/:task_id/failed` marks a segment task failed, releases the
+  segment slot, and marks the job failed.
+- External jobs create and notify an `assemble_gif` task after all segments
+  complete.
+- Internal jobs leave the second stage to the source worker and expect the
+  source worker to report `assembled`.
+- `POST /jobs/:job_id/assembled` marks the final job success/failure and stores
+  result metadata.
+- `GET /jobs/result?address=...&video_name=...` looks up a job by source
+  address and video name, returning current status and final GIF location when
+  available.
 
 Deferred implementation:
 
 - `POST /jobs/:job_id/assign`
 - `GET /jobs/:job_id`
-- `POST /tasks/:task_id/accepted`
-- `POST /tasks/:task_id/completed`
-- `POST /tasks/:task_id/failed`
 - `POST /tasks/:task_id/renew`
+- Retry or reassignment for failed/timed-out segment tasks.
+- Retry or reassignment for failed assemble notification.
 
 Important lifecycle details:
 
-- `process_segment` completion should store artifact URI, checksum, frame
-  metadata, and owning worker.
-- When all segments complete, Entry should create one `assemble_gif` task.
+- `process_segment` completion currently stores checksum, frame count,
+  duration, output size, and owning worker. Artifact URI is not required because
+  artifact location is derived by convention:
+  `http://{worker_address}/artifacts/{task_id}`.
+- When all external segments complete, Entry creates one `assemble_gif` task.
 - The assemble worker should pull segment artifacts directly from segment
   workers.
+- Final GIF location is derived as:
+  `http://{result_worker_address}/results/{result_name}`.
 - Entry should only store metadata and should never proxy video or artifact
   bytes.
+
+## Worker Node Implementation
+
+Current implementation:
+
+- `worker-node/cmd/test-worker` can register and send heartbeats.
+- There is no real worker HTTP server yet.
+
+Deferred implementation:
+
+- Accept segment upload from source worker.
+- Process `process_segment` tasks.
+- Expose segment artifacts through:
+  `GET /artifacts/:task_id`
+- Accept Entry assemble requests through:
+  `POST /tasks/assemble_gif`
+- Pull segment artifacts from peer workers.
+- Generate final GIF.
+- Expose final GIF through:
+  `GET /results/:result_name`
+- Report final success/failure to Entry through:
+  `POST /jobs/:job_id/assembled`
+- Receive best-effort Entry result notifications through:
+  `POST /jobs/result`
+- Track local running tasks and include task IDs in heartbeat.
+
+## Source Worker Notification
+
+Current implementation:
+
+- For external jobs, Entry best-effort notifies the source worker at:
+  `POST http://{source_worker_address}/jobs/result`
+- Notification failure does not change the final job status.
+
+Deferred improvement:
+
+- Persist notification attempts.
+- Retry failed notifications.
+- Add notification state to job query output.
+- Make notification endpoint idempotent on worker side.
 
 ## Authentication And Worker Identity
 
