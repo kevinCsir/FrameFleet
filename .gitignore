@@ -1,0 +1,48 @@
+# Go build outputs
+bin/
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go coverage and profiling
+coverage.out
+coverage.html
+*.cover
+*.prof
+
+# Go workspace files kept local unless intentionally shared
+go.work
+go.work.sum
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and IDE metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+.tmp/
+
+# FrameFleet local runtime data
+data/
+artifacts/
+uploads/
+results/
