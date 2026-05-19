@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "request_id": "req_segment_1",
+  "op": "process_segment",
+  "job_id": "job_123",
+  "task_id": "task_123",
+  "segment_index": 0,
+  "input": {
+    "mode": "file",
+    "path": "worker-node/data/spool/uploads/task_123.input",
+    "name": "task_123.input"
+  },
+  "output": {
+    "mode": "file",
+    "path": "worker-node/data/spool/artifacts/task_123.segment",
+    "name": "task_123.segment"
+  }
+}

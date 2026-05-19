@@ -200,25 +200,66 @@ Important lifecycle details:
 Current implementation:
 
 - `worker-node/cmd/test-worker` can register and send heartbeats.
-- There is no real worker HTTP server yet.
+- `worker-node/go/cmd/worker-agent` starts a real WorkerGo HTTP server,
+  registers with Entry, sends heartbeats, starts a C++ engine process pool,
+  accepts `POST /segments/:task_id/upload`, synchronously processes the segment
+  through the engine pool, reports task completion/failure to Entry, and exposes
+  segment artifacts through `GET /artifacts/:task_id`. It also accepts Entry
+  assemble requests through `POST /tasks/assemble_gif`, pulls artifacts from peer
+  workers, runs fake `assemble_gif` work through the engine pool, reports final
+  success/failure to Entry, and exposes final results through
+  `GET /results/:result_name`.
+- Segment upload is currently synchronous: the source worker's upload request is
+  held until the receiving worker finishes local `process_segment` work and
+  reports the task result to Entry.
 
 Deferred implementation:
 
-- Accept segment upload from source worker.
-- Process `process_segment` tasks.
-- Expose segment artifacts through:
-  `GET /artifacts/:task_id`
-- Accept Entry assemble requests through:
-  `POST /tasks/assemble_gif`
-- Pull segment artifacts from peer workers.
-- Generate final GIF.
-- Expose final GIF through:
-  `GET /results/:result_name`
-- Report final success/failure to Entry through:
-  `POST /jobs/:job_id/assembled`
+- Consider changing segment upload to asynchronous processing: return success to
+  the source worker after the segment is durably received and accepted, then run
+  `process_segment` in a background goroutine and report completed/failed to
+  Entry separately. This would reduce long-lived source-to-segment-worker HTTP
+  connections for large or slow videos.
+- Optimize assemble work to overlap artifact download and processing where the
+  engine format permits it. The first WorkerGo implementation should download
+  all artifacts first, then acquire an engine slot and run `assemble_gif`; later
+  versions can parallelize downloads and potentially stream artifacts into the
+  engine.
 - Receive best-effort Entry result notifications through:
   `POST /jobs/result`
 - Track local running tasks and include task IDs in heartbeat.
+
+
+## Source Worker Scheduling Strategy
+
+Planned MVP behavior:
+
+- Source WorkerGo scans local input videos from `WORKER_INPUT_DIR` and asks the
+  C++ engine to split a video into segment files before calling `POST /jobs`.
+- The MVP source scanner only keeps an in-memory seen set and does not persist
+  per-file state. It is meant for smoke testing; restarts may rescan unfinished
+  or previously processed inputs.
+- After splitting, the source worker tries to acquire one local engine slot with
+  a non-blocking lease.
+- If a slot is available, the source worker creates an `internal` job and
+  processes all segment tasks serially through that leased local engine slot.
+- If no local slot is immediately available, the source worker creates an
+  `external` job and uploads the segment files to the workers returned by Entry
+  assignments.
+- This keeps the first source-worker implementation compatible with the current
+  job-level `mode=internal|external` Entry model.
+
+Deferred improvement:
+
+- Persist source-worker input file state, or move processed inputs to durable
+  `.done` / `.failed` locations, so worker restarts do not accidentally rerun
+  already processed videos.
+- Move from job-level `internal|external` mode to per-segment task assignment.
+  In the hybrid model, one job can assign some `process_segment` tasks to the
+  source worker and others to remote workers, and the assemble worker pulls
+  artifacts from whichever worker owns each completed task. This should improve
+  CPU utilization and load balancing for long videos without forcing the entire
+  job to be either local or remote.
 
 ## Source Worker Notification
 

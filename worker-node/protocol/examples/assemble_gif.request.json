@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "request_id": "req_assemble_1",
+  "op": "assemble_gif",
+  "job_id": "job_123",
+  "inputs": [
+    {
+      "mode": "file",
+      "path": "worker-node/data/spool/artifacts/task_001.segment",
+      "name": "task_001.segment"
+    },
+    {
+      "mode": "file",
+      "path": "worker-node/data/spool/artifacts/task_002.segment",
+      "name": "task_002.segment"
+    }
+  ],
+  "output": {
+    "mode": "file",
+    "path": "worker-node/data/spool/results/job_123.gif",
+    "name": "job_123.gif"
+  }
+}

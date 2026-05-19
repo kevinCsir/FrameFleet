@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FrameFleet engine IPC message",
+  "type": "object",
+  "required": ["version", "type"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "description": "Message kind for Go worker agent <-> C++ engine JSON Lines IPC."
+    }
+  },
+  "additionalProperties": true
+}

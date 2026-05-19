@@ -25,8 +25,15 @@ type RegisterWorkerRequest struct {
 }
 
 type RegisterWorkerResponse struct {
-	Status   RegisterWorkerStatus `json:"status"`
-	WorkerID string               `json:"worker_id,omitempty"`
+	Status      RegisterWorkerStatus `json:"status"`
+	WorkerID    string               `json:"worker_id,omitempty"`
+	SplitPolicy SplitPolicy          `json:"split_policy,omitempty"`
+}
+
+type SplitPolicy struct {
+	TargetSegmentSizeBytes  int64 `json:"target_segment_size_bytes,omitempty"`
+	TargetSegmentDurationMS int64 `json:"target_segment_duration_ms,omitempty"`
+	MaxSegments             int   `json:"max_segments,omitempty"`
 }
 
 type HeartbeatWorkerRequest struct {

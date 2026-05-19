@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "request_id": "req_segment_1",
+  "type": "completed",
+  "job_id": "job_123",
+  "task_id": "task_123",
+  "segment_index": 0,
+  "artifact_name": "task_123.segment",
+  "checksum": "sha256:artifact",
+  "frame_count": 120,
+  "duration_ms": 1530,
+  "output_size_bytes": 456789
+}

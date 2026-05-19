@@ -176,9 +176,19 @@ Response:
 ```json
 {
   "status": "success",
-  "worker_id": "wrk_xxx"
+  "worker_id": "wrk_xxx",
+  "split_policy": {
+    "target_segment_duration_ms": 10000,
+    "target_segment_size_bytes": 0,
+    "max_segments": 0
+  }
 }
 ```
+
+`split_policy` is Entry's global source-video split guidance. Source workers
+use it before `POST /jobs` so segment sizes stay consistent across the cluster;
+`POST /jobs` still receives the resulting `segment_count`. A zero value means
+that specific limit is disabled.
 
 Statuses:
 
@@ -821,6 +831,9 @@ Environment:
 LOG_LEVEL=info
 LOG_OUTPUT=stdout
 LOG_FILE=logs/entry-server.log
+SPLIT_TARGET_SEGMENT_DURATION_MS=10000
+SPLIT_TARGET_SEGMENT_SIZE_BYTES=0
+SPLIT_MAX_SEGMENTS=0
 ```
 
 Gin uses a custom request logging middleware. Logs are JSON.

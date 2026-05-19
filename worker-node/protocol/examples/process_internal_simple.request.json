@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "request_id": "req_internal_1",
+  "op": "process_internal_simple",
+  "job_id": "job_123",
+  "input": {
+    "mode": "file",
+    "path": "worker-node/data/spool/videos/demo.mp4",
+    "name": "demo.mp4"
+  },
+  "output": {
+    "mode": "file",
+    "path": "worker-node/data/spool/results/job_123.gif",
+    "name": "job_123.gif"
+  }
+}

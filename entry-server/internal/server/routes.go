@@ -6,10 +6,11 @@ import (
 	"framefleet/entry-server/internal/handlers"
 	"framefleet/entry-server/internal/logger"
 	"framefleet/entry-server/internal/service"
+	"framefleet/pkg/protocol"
 )
 
-func registerRoutes(router *gin.Engine, registry *service.WorkerRegistry, jobs *service.JobManager, appLogger *logger.Logger) {
-	workerHandler := handlers.NewWorkerHandler(registry, appLogger)
+func registerRoutes(router *gin.Engine, registry *service.WorkerRegistry, jobs *service.JobManager, splitPolicy protocol.SplitPolicy, appLogger *logger.Logger) {
+	workerHandler := handlers.NewWorkerHandler(registry, splitPolicy, appLogger)
 	jobHandler := handlers.NewJobHandler(jobs, appLogger)
 	jobResultHandler := handlers.NewJobResultHandler(jobs, appLogger)
 	taskHandler := handlers.NewTaskHandler(jobs, appLogger)

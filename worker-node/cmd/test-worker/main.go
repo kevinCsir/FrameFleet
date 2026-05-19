@@ -79,6 +79,13 @@ func registerWorker(entryAddr string, req protocol.RegisterWorkerRequest) (strin
 	if resp.WorkerID == "" {
 		return "", fmt.Errorf("register response missing worker_id")
 	}
+	if resp.SplitPolicy.TargetSegmentDurationMS > 0 || resp.SplitPolicy.TargetSegmentSizeBytes > 0 || resp.SplitPolicy.MaxSegments > 0 {
+		log.Printf("entry split_policy target_duration_ms=%d target_size_bytes=%d max_segments=%d",
+			resp.SplitPolicy.TargetSegmentDurationMS,
+			resp.SplitPolicy.TargetSegmentSizeBytes,
+			resp.SplitPolicy.MaxSegments,
+		)
+	}
 	return resp.WorkerID, nil
 }
 

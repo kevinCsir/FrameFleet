@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "request_id": "req_segment_1",
+  "type": "failed",
+  "job_id": "job_123",
+  "task_id": "task_123",
+  "reason": "decode failed",
+  "retryable": true
+}

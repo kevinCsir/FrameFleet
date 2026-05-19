@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "request_id": "req_split_1",
+  "type": "completed",
+  "job_id": "job_123",
+  "segments": [
+    {
+      "segment_index": 0,
+      "path": "worker-node/data/spool/outgoing/job_123/segment_0.mp4",
+      "name": "segment_0.mp4",
+      "size_bytes": 123456
+    }
+  ],
+  "duration_ms": 800
+}
