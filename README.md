@@ -1,123 +1,115 @@
 # FrameFleet
 
-FrameFleet 是 FramePipeline 的分布式控制面重构版本，目标是把视频切成多个时间片并行处理，最后合成 GIF。
+FrameFleet 是一个分布式视频处理实验项目：把视频拆成多个时间片，并行做轮廓处理，最后合成透明背景 GIF。
 
-当前阶段只实现分布式控制面，不迁移旧 C++ 视频处理逻辑。Entry Server 使用 Go + Gin 编写，Worker 端目前只有一个用于注册和心跳的测试客户端。
+当前真实链路已经跑通：Entry 控制面、WorkerGo 调度/传输、C++ engine 的 split/process/assemble，以及 4-worker 真实视频 smoke。
 
 ## 当前状态
 
-Entry Server 已实现：
+已实现：
 
-- worker 注册
-- worker 心跳
-- internal/external job 创建
-- job 幂等：`source_worker_address + video_name`
-- segment task 分配
-- segment task accepted/completed/failed
-- external job 的 assemble task 调度协议
-- final assembled 回报
-- source worker best-effort 结果通知协议
-- 按来源地址和视频名查询 job/result
-- JSON 结构化日志
-- smoke 测试脚本
+- Entry Server：Go + Gin 控制面。
+- WorkerGo：真实 worker agent，负责注册、心跳、扫描本地输入、HTTP 收发、slot 管理。
+- C++ engine：WorkerGo 管理的本地 subprocess，通过 JSON Lines 协议通信。
+- 视频处理：
+  - `split_video`: `ffprobe` + `ffmpeg` 拆分 mp4。
+  - `process_segment`: OpenCV Canny，输出红色轮廓透明 PNG 帧流。
+  - `assemble_gif`: FFAF artifact -> PNG frames -> ffmpeg 透明 GIF。
+- 一阶段 artifact 使用单文件 FFAF v1，Go 不解析其内容。
+- 真实单机 smoke 和真实 4-worker cluster smoke。
 
-暂未实现：
+暂未实现或仍需生产化：
 
-- 真实 Worker HTTP 服务
-- segment 上传、处理、artifact 下载
-- GIF 实际生成
-- GORM/数据库持久化
-- task 超时和重试
-- 认证鉴权
+- 持久化数据库。
+- task 超时和重试。
+- notification retry。
+- 认证鉴权。
+- 中间产物/tmp GC。
+- 更完整的 slot 子进程死亡重拉、请求重试、隔离治理。
 
 详细架构见：
 
+- `AGENTS.md`
 - `docs/architecture-distilled.md`
 - `docs/future-work.md`
-- `AGENTS.md`
+- `worker-node/protocol/ffaf-v1.md`
 
 ## 目录结构
 
 ```text
-entry-server/              # Entry Server 控制面
-  cmd/server/main.go       # Entry 启动入口
-  internal/handlers/       # Gin handlers
-  internal/service/        # 业务逻辑和内存状态
-  internal/model/          # Entry 内部状态模型
-  internal/server/         # Gin server、路由、中间件
-  internal/logger/         # slog 日志封装
+entry-server/                    # Entry 控制面
+  cmd/server/main.go             # Entry 启动入口
+  internal/handlers/             # Gin handlers
+  internal/service/              # 业务逻辑和内存状态
+  internal/model/                # Entry 内部状态模型
+  internal/server/               # Gin server、路由、中间件
+  internal/logger/               # slog 日志封装
 
 worker-node/
-  cmd/test-worker/         # 简单测试 worker：注册 + 心跳
+  go/cmd/worker-agent/           # 真实 WorkerGo agent
+  go/internal/                   # WorkerGo 内部模块
+  cmd/test-worker/               # 简单 register/heartbeat 测试客户端
+  cpp/                           # C++ engine
+  protocol/                      # Go/C++ 示例协议和 FFAF 文档
 
-pkg/protocol/              # Entry/Worker 共享 HTTP 协议 DTO
-scripts/                   # smoke 测试脚本
-docs/                      # 架构和 future work 文档
+pkg/protocol/                    # Entry/Worker 共享 HTTP 协议 DTO
+scripts/                         # smoke 测试脚本
+docs/                            # 架构和 future work 文档
 ```
 
-## 安装 Go 环境
+## 依赖
 
-如果机器还没有 Go，可以安装 Go 1.22.x。
+Go：
+
+- Go 1.22+
+
+C++ engine：
+
+- CMake 3.16+
+- C++17 compiler
+- `ffmpeg`
+- `ffprobe`
+- OpenCV 4 development package
+
+Ubuntu/WSL 示例：
 
 ```bash
-cd /tmp
-wget https://mirrors.aliyun.com/golang/go1.22.12.linux-amd64.tar.gz
-
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.22.12.linux-amd64.tar.gz
+sudo apt install cmake g++ ffmpeg libopencv-dev
 ```
 
-配置 PATH：
-
-```bash
-echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.zshrc
-source ~/.zshrc
-```
-
-如果使用 bash：
-
-```bash
-echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
-source ~/.bashrc
-```
-
-配置 Go 模块镜像：
-
-```bash
-go env -w GOPROXY=https://goproxy.cn,direct
-go env -w GOSUMDB=sum.golang.google.cn
-```
-
-验证：
+检查：
 
 ```bash
 go version
-go env GOPROXY
+ffmpeg -version
+ffprobe -version
+pkg-config --modversion opencv4
 ```
 
-## 初始化依赖
+## 初始化
 
 ```bash
 source ~/.zshrc
 GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go/pkg/mod go mod tidy
 ```
 
-这里把 Go build cache 和 module cache 放到 `/tmp`，是为了避免某些沙箱或受限环境不能写 home 目录缓存。
+构建 C++ engine：
 
-## 启动 Entry Server
+```bash
+cmake -S worker-node/cpp -B worker-node/cpp/build
+cmake --build worker-node/cpp/build
+```
 
-默认监听 `:8080`：
+默认 engine binary 路径：
+
+```text
+worker-node/cpp/build/framefleet-engine
+```
+
+## 启动 Entry
 
 ```bash
 source ~/.zshrc
-GOCACHE=/tmp/go-build \
-GOMODCACHE=/tmp/go/pkg/mod \
-go run ./entry-server/cmd/server
-```
-
-指定地址：
-
-```bash
 ENTRY_SERVER_ADDR=127.0.0.1:18080 \
 LOG_LEVEL=info \
 LOG_OUTPUT=stdout \
@@ -126,94 +118,117 @@ GOMODCACHE=/tmp/go/pkg/mod \
 go run ./entry-server/cmd/server
 ```
 
-## 启动测试 Worker
+Entry split policy 默认：
 
-测试 worker 只负责向 Entry 注册并维持心跳，不处理真实视频。
+```text
+SPLIT_TARGET_SEGMENT_DURATION_MS=3000
+SPLIT_TARGET_SEGMENT_SIZE_BYTES=0
+SPLIT_MAX_SEGMENTS=8
+```
+
+## 启动真实 Worker
 
 ```bash
 source ~/.zshrc
+WORKER_LISTEN_ADDR=:19001 \
+WORKER_ADVERTISED_ADDRESS=127.0.0.1:19001 \
+ENTRY_BASE_URL=http://127.0.0.1:18080 \
+WORKER_TOTAL_SLOTS=1 \
+WORKER_DATA_DIR=/tmp/framefleet-worker1/data \
+WORKER_INPUT_DIR=/tmp/framefleet-worker1/input \
+WORKER_ENGINE_BINARY=worker-node/cpp/build/framefleet-engine \
+WORKER_CANNY_LOW_THRESHOLD=180 \
+WORKER_CANNY_HIGH_THRESHOLD=360 \
 GOCACHE=/tmp/go-build \
 GOMODCACHE=/tmp/go/pkg/mod \
-go run ./worker-node/cmd/test-worker \
-  -entry http://127.0.0.1:18080 \
-  -port 19001 \
-  -slots 4
+go run ./worker-node/go/cmd/worker-agent
 ```
 
-开多个 worker 时改端口：
+把 `.mp4` 放进 `WORKER_INPUT_DIR` 后，WorkerGo 会扫描并注册 job。
 
-```bash
-go run ./worker-node/cmd/test-worker -entry http://127.0.0.1:18080 -port 19002 -slots 2
-go run ./worker-node/cmd/test-worker -entry http://127.0.0.1:18080 -port 19003 -slots 2
-```
+## 测试
 
-常用参数：
-
-```text
--entry http://127.0.0.1:8080    Entry Server 地址
--host 127.0.0.1                 worker 对外声明 host
--port 9001                      worker 对外声明 port
--slots 4                        worker 最大 slot 数
--disk-total 1000000000          磁盘总空间，字节
--disk-free 800000000            磁盘可用空间，字节
--heartbeat-interval 10s         心跳间隔
-```
-
-## 运行测试
-
-编译级检查：
+Go 全量测试：
 
 ```bash
 source ~/.zshrc
 GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go/pkg/mod go test ./...
 ```
 
-端到端 smoke 测试：
+C++ artifact 测试：
+
+```bash
+cmake --build worker-node/cpp/build
+ctest --test-dir worker-node/cpp/build --output-on-failure
+```
+
+CPP 真实本地链路测试：
+
+```bash
+source ~/.zshrc
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go/pkg/mod \
+go test ./worker-node/go/internal/enginepool -run TestCppEngineRealVideoPipeline -count=1
+```
+
+Entry 生命周期 smoke：
 
 ```bash
 source ~/.zshrc
 scripts/smoke_task_lifecycle.sh
 ```
 
-smoke 脚本会临时启动 Entry Server，并用 HTTP 调用覆盖：
+真实单机 smoke：
 
-- worker register
-- heartbeat
-- external job
-- job duplicate / `already_exists`
-- task accepted
-- task completed
-- task failed
-- slot reservation/release
-- internal job
-- assembled 回报
-- result 查询
+```bash
+source ~/.zshrc
+KEEP_LOGS=1 bash scripts/smoke_worker_single_real.sh
+```
 
-## 主要环境变量
+真实 4-worker cluster smoke：
 
-Entry Server：
+```bash
+source ~/.zshrc
+KEEP_LOGS=1 bash scripts/smoke_worker_cluster_real.sh
+```
+
+`smoke_worker_cluster_real.sh` 会启动 Entry + 4 workers，并处理 6 个真实视频任务。它比单元测试慢，通常只在明确需要验证全链路时运行。
+
+旧的 `scripts/smoke_worker_cluster.sh` 仍是 fake/压力风格 cluster smoke，不适合验证真实视频处理质量。
+
+## 主要配置
+
+Entry：
 
 ```text
 ENTRY_SERVER_ADDR=:8080
 WORKER_HEARTBEAT_TIMEOUT_SECONDS=30
 WORKER_HEARTBEAT_CHECK_INTERVAL_SECONDS=10
+SPLIT_TARGET_SEGMENT_DURATION_MS=3000
+SPLIT_TARGET_SEGMENT_SIZE_BYTES=0
+SPLIT_MAX_SEGMENTS=8
+```
+
+Worker：
+
+```text
+WORKER_LISTEN_ADDR=:9001
+ENTRY_BASE_URL=http://127.0.0.1:8080
+WORKER_ADVERTISED_ADDRESS=127.0.0.1:9001
+WORKER_TOTAL_SLOTS=4
+WORKER_DATA_DIR=worker-node/data
+WORKER_INPUT_DIR=worker-node/data/input
+WORKER_ENGINE_BINARY=worker-node/cpp/build/framefleet-engine
+WORKER_CANNY_LOW_THRESHOLD=180
+WORKER_CANNY_HIGH_THRESHOLD=360
 ```
 
 日志：
 
 ```text
-LOG_LEVEL=info
-LOG_OUTPUT=stdout
+LOG_OUTPUT=stdout|file|both|discard
 LOG_FILE=logs/entry-server.log
-```
-
-`LOG_OUTPUT` 可选：
-
-```text
-stdout
-file
-both
-discard
+WORKER_LOG_OUTPUT=stdout|file|both|discard
+WORKER_LOG_FILE=logs/worker-agent.log
 ```
 
 ## 主要接口
@@ -241,42 +256,30 @@ POST /tasks/:task_id/completed
 POST /tasks/:task_id/failed
 ```
 
-Entry -> Worker 协议：
+Entry -> Worker：
 
 ```http
 POST /tasks/assemble_gif
 POST /jobs/result
 ```
 
-这些跨进程协议的请求体和响应体定义在 `pkg/protocol/`。
+Worker -> Worker:
+
+```http
+POST /segments/:task_id/upload
+GET  /artifacts/:task_id
+GET  /results/:result_name
+```
+
+公共 HTTP 协议结构定义在 `pkg/protocol/`。
 
 ## 设计原则
 
-- Entry 只做控制面，不传视频、不转发 artifact、不代理 GIF。
+- Entry 只做控制面，不代理视频、artifact 或 GIF bytes。
 - Worker 之间直接传输 segment 和 artifact。
 - internal job 也必须先注册到 Entry。
+- internal/external 是 task 级别属性，不是 job 级别属性。
 - job 幂等 key 是 `source_worker_address + video_name`。
-- 公共协议结构放 `pkg/protocol`，不要在 Entry 和 Worker 两边重复定义。
-- Entry 内部状态放 `entry-server/internal/model`。
-- 不要在持有一个 manager 锁时调用另一个 manager 的 helper。
-- 不要持锁进行 HTTP 请求。
-
-## 后续开发
-
-继续开发前建议先看：
-
-```text
-AGENTS.md
-docs/future-work.md
-docs/architecture-distilled.md
-```
-
-如果新增协议或修改接口，请同步更新：
-
-- `pkg/protocol`
-- `docs/architecture-distilled.md`
-- `scripts/smoke_task_lifecycle.sh`
-
-如果只是记录暂缓事项或迁移注意，请更新：
-
-- `docs/future-work.md`
+- Go/CPP 协议不包含 job/task 概念；C++ 只知道 op 和文件路径。
+- Worker artifact 对 Go 不透明；C++ 使用 FFAF v1 读写 artifact。
+- 公共 HTTP 协议结构放 `pkg/protocol`，不要在 Entry 和 Worker 两边重复定义。

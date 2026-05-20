@@ -23,8 +23,11 @@ This file is the quick-start memo for agents working on FrameFleet.
 ## Current Project Shape
 
 - Entry Server is the Go/Gin control plane.
-- Worker Node is not fully implemented yet. `worker-node/cmd/test-worker` is
-  only a simple registration/heartbeat test client.
+- Worker Node has a real Go agent at `worker-node/go/cmd/worker-agent`.
+  `worker-node/cmd/test-worker` is still only a simple registration/heartbeat
+  test client.
+- C++ engine lives under `worker-node/cpp` and is driven by WorkerGo slot
+  subprocesses over line-delimited JSON.
 - Public HTTP protocol DTOs and enums live in `pkg/protocol`.
 - Entry-only in-memory state lives in `entry-server/internal/model`.
 - Entry business logic lives in `entry-server/internal/service`.
@@ -37,6 +40,11 @@ This file is the quick-start memo for agents working on FrameFleet.
 - Source workers send segment bytes directly to segment workers.
 - Assemble workers pull artifacts directly from segment workers.
 - Internal jobs also register with Entry before local processing.
+- Job internal/external handling is task-level, not job-level.
+- Go/CPP protocol must stay job/task agnostic: C++ knows ops and file paths,
+  not distributed job/task IDs.
+- Worker artifact files are opaque to Go. Phase-one C++ artifacts use FFAF v1;
+  see `worker-node/protocol/ffaf-v1.md`.
 - Job idempotency is based on:
   `source_worker_address + video_name`.
 - Cross-process request/response structs must be added to `pkg/protocol`, not
@@ -58,6 +66,29 @@ This file is the quick-start memo for agents working on FrameFleet.
   reservations.
 - Disk free bytes are observed from heartbeat; `ReservedDiskBytes` is Entry's
   reservation ledger.
+- WorkerGo observes real disk space for the results filesystem. Entry currently
+  reserves final GIF space; intermediate artifact GC and fuller disk budgeting
+  remain future work.
+
+## Worker And Engine Notes
+
+- WorkerGo must finish initialization and start its HTTP server before starting
+  the source scan loop; Entry may assign work back to the source worker.
+- B/E HTTP handlers should acknowledge quickly and do blocking slot work in
+  background goroutines.
+- Slot subprocesses are single-request-at-a-time. Preserve request/response
+  draining semantics if adding cancellation or retry behavior.
+- C++ split uses `ffprobe`/`ffmpeg`; process uses OpenCV; assemble uses ffmpeg
+  palette generation for transparent GIF output.
+- Keep engine work effectively single-threaded:
+  `cv::setNumThreads(1)`, ffmpeg `-threads 1`, `-filter_threads 1`, and
+  `-filter_complex_threads 1`.
+- Canny thresholds are worker config:
+  `WORKER_CANNY_LOW_THRESHOLD` and `WORKER_CANNY_HIGH_THRESHOLD`; WorkerGo
+  passes them to slots as `FRAMEFLEET_CANNY_LOW_THRESHOLD` and
+  `FRAMEFLEET_CANNY_HIGH_THRESHOLD`.
+- Entry split defaults are currently 3000 ms target segment duration and
+  max 8 segments.
 
 ## Implemented Entry Surface
 
@@ -76,14 +107,12 @@ Implemented:
 
 Major not-yet-implemented areas:
 
-- real Worker HTTP server
-- segment upload and processing
-- artifact download endpoint
-- final GIF generation and result serving
 - persistence through GORM
 - task timeout and retry
 - notification retry
 - authentication middleware/JWT/API keys
+- intermediate artifact/tmp GC
+- production-grade slot restart/retry management
 
 ## Testing
 
@@ -104,6 +133,28 @@ scripts/smoke_task_lifecycle.sh
 The smoke script starts a temporary Entry Server, uses HTTP calls to exercise
 registration, heartbeat, internal/external jobs, task lifecycle, assembled
 reporting, idempotency, and result query.
+
+Real video tests:
+
+```bash
+source ~/.zshrc
+cmake --build worker-node/cpp/build
+ctest --test-dir worker-node/cpp/build --output-on-failure
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go/pkg/mod go test ./worker-node/go/internal/enginepool
+```
+
+Real smoke scripts:
+
+```bash
+source ~/.zshrc
+KEEP_LOGS=1 bash scripts/smoke_worker_single_real.sh
+KEEP_LOGS=1 bash scripts/smoke_worker_cluster_real.sh
+```
+
+`smoke_worker_cluster_real.sh` starts Entry plus 4 workers and uses real video
+processing. It is slower than unit tests and should only be run when explicitly
+requested. The older `smoke_worker_cluster.sh` is still the fake/pressure-style
+cluster smoke and compares fake input/output bytes.
 
 If the sandbox blocks local networking, request approval instead of rewriting
 the test to avoid network use.
