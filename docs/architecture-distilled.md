@@ -11,8 +11,11 @@ FrameFleet is a distributed rebuild of FramePipeline. Its job is to split a
 video into multiple time segments, process those segments in parallel, and then
 assemble the final GIF.
 
-The current phase focuses on the distributed control plane. Old C++ processing
-logic is not being migrated yet. The Entry Server is written in Go with Gin.
+The current phase has a working in-memory Entry control plane and a first
+WorkerGo implementation. WorkerGo uses Gin for HTTP/control-plane behavior and
+runs a pool of C++ engine child processes for video-like file operations. The
+C++ engine is currently fake: it copies/splits/concatenates files so the full
+distributed lifecycle can be tested before real OpenCV/FFmpeg logic is ported.
 
 ## Process Model
 
@@ -91,15 +94,37 @@ entry-server/
 
 worker-node/
   cmd/test-worker/main.go
+  go/
+    cmd/worker-agent/main.go
+    internal/agent/
+    internal/config/
+    internal/enginepool/
+    internal/engineprotocol/
+    internal/entryclient/
+    internal/handlers/
+    internal/heartbeat/
+    internal/peerclient/
+    internal/server/
+    internal/sourceworker/
+    internal/spool/
+    internal/workerstate/
+  cpp/
+    CMakeLists.txt
+    include/framefleet_engine/
+    src/
+    third_party/nlohmann/json.hpp
+  protocol/examples/
 
 pkg/protocol/
   assemble.go
   job.go
+  segment.go
   task.go
   worker.go
 
 scripts/
   smoke_task_lifecycle.sh
+  smoke_worker_cluster.sh
 
 docs/
   future-work.md
@@ -111,6 +136,17 @@ values. Both Entry and Worker code should import these types.
 
 `entry-server/internal/model` contains Entry-only in-memory domain state such as
 `Worker`, `Job`, and `Task`.
+
+`worker-node/go/internal/engineprotocol` contains the Go side of the JSON Lines
+IPC protocol used between WorkerGo and the C++ engine. The C++ side lives in
+`worker-node/cpp/include/framefleet_engine/protocol.hpp` and
+`worker-node/cpp/src/protocol.cpp`. Example IPC messages live under
+`worker-node/protocol/examples`.
+
+`worker-node/go/internal/enginepool` owns long-running C++ child processes. Each
+engine process represents one local processing slot. WorkerGo sends small JSON
+requests over stdin and reads one JSON response from stdout. Large payloads are
+exchanged by file path in the current MVP.
 
 ## Protocol Package
 
@@ -215,6 +251,134 @@ Entry stores:
 
 If the same address registers again, Entry returns the existing worker ID with
 `status=exists`.
+
+## WorkerGo Runtime
+
+`worker-node/go/cmd/worker-agent` is the real Worker Node entry point.
+
+Startup flow:
+
+1. Load environment variables, including `.env` support. Entry loads `.env`
+   and `entry-server/.env`; Worker loads `.env` and `worker-node/.env` unless an
+   override env file is configured.
+2. Create Worker data/spool directories.
+3. Start the C++ engine process pool.
+4. Register with Entry and store the returned worker ID and split policy.
+5. Start heartbeat and the placeholder local task monitor.
+6. Start the Gin HTTP server.
+7. Start the source scanner after the worker's own `/healthz` endpoint is
+   reachable, so source upload requests do not race the HTTP listener.
+
+Important environment variables:
+
+```text
+WORKER_LISTEN_ADDR=:9001
+WORKER_ADVERTISED_ADDRESS=127.0.0.1:9001
+ENTRY_BASE_URL=http://127.0.0.1:8080
+WORKER_TOTAL_SLOTS=4
+WORKER_DATA_DIR=worker-node/data
+WORKER_INPUT_DIR=worker-node/data/input
+WORKER_SOURCE_SCAN_INTERVAL_SECONDS=10
+WORKER_ENGINE_BINARY=worker-node/cpp/build/framefleet-engine
+WORKER_HEARTBEAT_INTERVAL_SECONDS=10
+WORKER_DISK_TOTAL_BYTES=1000000000
+WORKER_DISK_FREE_BYTES=800000000
+```
+
+Worker HTTP endpoints currently implemented:
+
+```text
+GET  /healthz
+POST /segments/:task_id/upload
+GET  /artifacts/:task_id
+POST /tasks/assemble_gif
+GET  /results/:result_name
+POST /jobs/result       # route exists; handler is still not implemented
+```
+
+Spool layout under `WORKER_DATA_DIR/spool`:
+
+```text
+uploads/    received segment inputs
+outgoing/   source-worker split segment files
+artifacts/  processed segment artifacts
+results/    final GIF/result files
+tmp/        upload and assemble temporary files
+```
+
+Segment upload is synchronous in the MVP: the receiving worker stores the body,
+accepts the task at Entry, calls the C++ engine `process_segment`, reports
+completed/failed to Entry, and only then returns to the source worker.
+
+Assemble is also synchronous in the MVP: the assemble worker downloads all
+artifacts from peer workers, calls the C++ engine `assemble_gif`, reports the job
+assembled to Entry, and then returns to Entry's assemble request.
+
+## C++ Engine IPC
+
+WorkerGo keeps a pool of long-running C++ child processes. Each child process is
+owned by one engine slot. Parent-child communication uses JSON Lines over
+stdin/stdout:
+
+- WorkerGo writes one JSON request line to the child's stdin.
+- The C++ engine reads the line, validates it, performs the operation, and
+  writes one JSON response line to stdout.
+- The response must echo `request_id`; WorkerGo rejects mismatched responses.
+- C++ logs go to stderr; WorkerGo reads and forwards them to its logger.
+
+Supported fake operations:
+
+```text
+ping
+process_internal_simple
+split_video
+process_segment
+assemble_gif
+```
+
+Current fake behavior:
+
+- `split_video` always creates two segment files by splitting the input bytes in
+  half, regardless of the requested segment count. This is test scaffolding, not
+  final policy.
+- `process_segment` copies the segment input file to the artifact output file.
+- `assemble_gif` concatenates artifact inputs in order into the result file.
+- `process_internal_simple` copies input to output.
+
+The C++ dependency on nlohmann/json is vendored as a single header under
+`worker-node/cpp/third_party/nlohmann/json.hpp`; it does not require apt for
+normal builds.
+
+Build:
+
+```bash
+cmake -S worker-node/cpp -B worker-node/cpp/build
+cmake --build worker-node/cpp/build
+```
+
+## Source Worker Scanner
+
+The first source-worker implementation scans `WORKER_INPUT_DIR` periodically. It
+is intentionally simple and meant to make the cluster runnable.
+
+For each unseen file:
+
+1. Call C++ `split_video` and write segment files under `spool/outgoing`.
+2. Try to acquire a local engine lease without blocking.
+3. If a local engine is available, try to create an internal job and process all
+   assigned segment tasks serially through that same local engine lease.
+4. If no local engine is available, or if internal job creation fails because
+   Entry cannot reserve enough source-worker slots, create an external job.
+5. For external jobs, upload each segment file directly to the worker address
+   returned by Entry assignments.
+
+Current limitations:
+
+- The scanner only keeps an in-memory `seen` set. It does not persist per-file
+  state and does not move files to `.done` / `.failed` directories.
+- Scanning is sequential to keep the MVP stable with Entry reservations.
+- The current Entry model is job-level `internal|external`; hybrid per-segment
+  internal/external scheduling is deferred.
 
 ## Worker Heartbeat
 
@@ -515,6 +679,54 @@ Logic:
 - failure reason and retryability are stored
 - reserved segment slot is released
 
+## Segment Upload To Worker
+
+Endpoint on segment worker:
+
+```http
+POST /segments/:task_id/upload
+```
+
+Request body is raw segment bytes. The first implementation writes the body to a
+worker-local spool file before calling the C++ engine.
+
+Success response:
+
+```json
+{
+  "status": "success"
+}
+```
+
+Failure response:
+
+```json
+{
+  "status": "failed",
+  "reason": "entry complete task failed: ..."
+}
+```
+
+Current synchronous flow:
+
+1. Store upload body under `spool/uploads`.
+2. Call Entry `POST /tasks/:task_id/accepted`.
+3. Call C++ `process_segment`.
+4. Store artifact under `spool/artifacts/{task_id}.segment`.
+5. Call Entry `POST /tasks/:task_id/completed` or `/failed`.
+6. Return success/failure to the source worker.
+
+## Artifact Download From Worker
+
+Endpoint on segment worker:
+
+```http
+GET /artifacts/:task_id
+```
+
+The worker serves the processed artifact file derived by convention from the
+local spool path. Entry never proxies this data.
+
 ## Assemble Request From Entry To Worker
 
 Endpoint on worker:
@@ -699,6 +911,17 @@ If `result_name` is omitted, Entry defaults it to:
 {job_id}.gif
 ```
 
+## Final Result Download From Worker
+
+Endpoint on result worker:
+
+```http
+GET /results/:result_name
+```
+
+The worker serves the final assembled result from `spool/results`. Entry stores
+only the result metadata and URI.
+
 ## Source Worker Result Notification
 
 Endpoint on source worker:
@@ -745,7 +968,10 @@ Expected response:
 }
 ```
 
-Notification failure does not roll back job status.
+Notification failure does not roll back job status. WorkerGo currently has the
+`POST /jobs/result` route registered, but the handler still returns
+`not_implemented`; this is acceptable for the MVP because Entry treats source
+notification as best-effort.
 
 ## Result Query
 
@@ -838,9 +1064,9 @@ SPLIT_MAX_SEGMENTS=0
 
 Gin uses a custom request logging middleware. Logs are JSON.
 
-## Smoke Test
+## Smoke Tests
 
-Script:
+Entry lifecycle smoke:
 
 ```bash
 scripts/smoke_task_lifecycle.sh
@@ -850,25 +1076,33 @@ It starts Entry, registers workers, creates external and internal jobs, checks
 idempotency, exercises task completion/failure, reports internal assembled
 success, and queries final result.
 
-Run:
+Worker cluster smoke:
 
 ```bash
-source ~/.zshrc
-scripts/smoke_task_lifecycle.sh
+scripts/smoke_worker_cluster.sh
 ```
 
-Compile check:
+It starts one Entry and three WorkerGo processes on different localhost ports.
+Worker1 gets ten input files; Worker2 and Worker3 start with empty input
+directories. The fake C++ engine splits each input into two segment files and
+assembles by concatenation. The script waits for every job to complete, downloads
+each final result URI, and verifies the output bytes match the original input
+file.
+
+Build and test sequence:
 
 ```bash
-source ~/.zshrc
+cmake --build worker-node/cpp/build
 GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go/pkg/mod go test ./...
+scripts/smoke_worker_cluster.sh
 ```
 
-## Current Entry Coverage
+## Current Coverage
 
-The current Entry control plane supports:
+Entry currently supports:
 
 - worker registration
+- split policy returned during registration
 - worker heartbeat
 - internal and external job creation
 - idempotent job registration by source address and video name
@@ -880,28 +1114,45 @@ The current Entry control plane supports:
 - best-effort source worker result notification for external jobs
 - result query by source address and video name
 
+WorkerGo currently supports:
+
+- real Gin HTTP server
+- `.env` / environment-based configuration
+- registration and heartbeat loop
+- C++ engine child-process pool
+- source input directory scanning
+- fake video splitting through C++
+- synchronous segment upload processing
+- artifact serving
+- synchronous assemble handling
+- final result serving
+- cluster-level smoke testing with three workers and one Entry
+
 ## Important Deferred Work
 
 High priority:
 
-- Real worker HTTP server
-- Segment upload endpoint on worker
-- Artifact download endpoint on worker
-- Assemble request endpoint on worker
-- Final result download endpoint on worker
-- Persistence with GORM
-- Task assigned/running timeout
-- Retry/reassignment policy
-- Notification retry policy
+- Replace fake C++ copy/split/concat operations with real video processing.
+- Persist Entry state with GORM.
+- Persist source-worker input file state or move files to `.done` / `.failed`.
+- Add task assigned/running timeout handling.
+- Add retry/reassignment policy for failed or timed-out tasks.
+- Add retry policy for Entry result notifications.
+- Implement source-worker `POST /jobs/result` notification handling.
+- Move from job-level `internal|external` mode to per-segment hybrid scheduling.
 
 Medium priority:
 
-- Dedicated scheduling index instead of scanning workers
-- Liveness linked-list index instead of full scan
-- JWT/API key identity middleware
-- Disk accounting split between temporary workspace and persistent artifacts
-- GET `/jobs/:job_id`
-- `POST /tasks/:task_id/renew`
+- Change segment upload from synchronous processing to durable receive +
+  background processing.
+- Overlap assemble artifact downloads with processing where the engine format
+  allows it.
+- Dedicated scheduling index instead of scanning workers.
+- Liveness linked-list index instead of full scan.
+- JWT/API key identity middleware.
+- Disk accounting split between temporary workspace and persistent artifacts.
+- GET `/jobs/:job_id`.
+- `POST /tasks/:task_id/renew`.
 
 ## Implementation Principles
 
