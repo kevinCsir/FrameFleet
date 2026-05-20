@@ -3,7 +3,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <stdexcept>
+#include <thread>
 
 namespace framefleet_engine {
 namespace {
@@ -94,8 +96,15 @@ std::int64_t elapsed_ms(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 }
 
+void wait_for_fake_work() {
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> delay_ms(200, 400);
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms(rng)));
+}
+
 Response handle_process_internal_simple(const Request& request) {
     const auto start = std::chrono::steady_clock::now();
+    wait_for_fake_work();
     copy_file(request.input->path, request.output->path);
 
     auto response = make_completed_response(request);
@@ -107,21 +116,22 @@ Response handle_process_internal_simple(const Request& request) {
 
 Response handle_split_video(const Request& request) {
     const auto start = std::chrono::steady_clock::now();
+    wait_for_fake_work();
     std::filesystem::create_directories(request.output_dir);
 
     const auto input_size = file_size_or_zero(request.input->path);
-    const auto first_size = (input_size + 1) / 2;
-    const auto second_size = input_size - first_size;
+    const auto segment_count = request.segment_count;
 
     auto response = make_completed_response(request);
-    for (int index = 0; index < 2; ++index) {
+    std::int64_t offset = 0;
+    for (int index = 0; index < segment_count; ++index) {
         const auto name = "segment_" + std::to_string(index) + ".mp4";
         const auto path = (std::filesystem::path(request.output_dir) / name).string();
-        if (index == 0) {
-            copy_file_range(request.input->path, path, 0, first_size);
-        } else {
-            copy_file_range(request.input->path, path, first_size, second_size);
-        }
+        const auto remaining_segments = segment_count - index;
+        const auto remaining_bytes = input_size - offset;
+        const auto length = remaining_segments > 0 ? (remaining_bytes + remaining_segments - 1) / remaining_segments : 0;
+        copy_file_range(request.input->path, path, offset, length);
+        offset += length;
         response.segments.push_back(SegmentFile{
             index,
             path,
@@ -135,6 +145,7 @@ Response handle_split_video(const Request& request) {
 
 Response handle_process_segment(const Request& request) {
     const auto start = std::chrono::steady_clock::now();
+    wait_for_fake_work();
     copy_file(request.input->path, request.output->path);
 
     auto response = make_completed_response(request);
@@ -146,6 +157,7 @@ Response handle_process_segment(const Request& request) {
 
 Response handle_assemble_gif(const Request& request) {
     const auto start = std::chrono::steady_clock::now();
+    wait_for_fake_work();
     ensure_parent_dir(request.output->path);
 
     std::ofstream output(request.output->path, std::ios::binary | std::ios::trunc);

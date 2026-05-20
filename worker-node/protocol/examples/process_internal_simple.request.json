@@ -2,7 +2,6 @@
   "version": 1,
   "request_id": "req_internal_1",
   "op": "process_internal_simple",
-  "job_id": "job_123",
   "input": {
     "mode": "file",
     "path": "worker-node/data/spool/videos/demo.mp4",

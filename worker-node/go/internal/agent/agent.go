@@ -19,6 +19,7 @@ import (
 	"framefleet/worker-node/go/internal/sourceworker"
 	"framefleet/worker-node/go/internal/spool"
 	"framefleet/worker-node/go/internal/taskmonitor"
+	"framefleet/worker-node/go/internal/workerlog"
 	"framefleet/worker-node/go/internal/workerstate"
 )
 
@@ -33,14 +34,23 @@ type Agent struct {
 	heartbeat  *heartbeat.Loop
 	peers      *peerclient.Client
 	source     *sourceworker.Runner
+	closeLog   func() error
 }
 
 func New(cfg config.Config) (*Agent, error) {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger, closeLog, err := workerlog.New(workerlog.Config{
+		Level:  cfg.LogLevel,
+		Output: cfg.LogOutput,
+		File:   cfg.LogFile,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	spoolManager := spool.New(cfg.DataDir)
 	for _, dir := range spoolManager.Dirs() {
 		if err := os.MkdirAll(dir, 0755); err != nil {
+			_ = closeLog()
 			return nil, err
 		}
 	}
@@ -59,6 +69,7 @@ func New(cfg config.Config) (*Agent, error) {
 		DataDir:    cfg.DataDir,
 	}, logger)
 	if err != nil {
+		_ = closeLog()
 		return nil, err
 	}
 
@@ -76,6 +87,7 @@ func New(cfg config.Config) (*Agent, error) {
 			InputDir: cfg.InputDir,
 			Interval: cfg.SourceScanInterval,
 		}, logger, entry, peers, pool, spoolManager, state),
+		closeLog: closeLog,
 	}, nil
 }
 
@@ -108,6 +120,11 @@ func (a *Agent) Run() error {
 	defer func() {
 		if err := a.enginePool.Stop(context.Background()); err != nil {
 			a.logger.Error("engine pool stop failed", "event", "engine_pool_stop_failed", "error", err)
+		}
+		if a.closeLog != nil {
+			if err := a.closeLog(); err != nil {
+				a.logger.Error("worker logger close failed", "event", "worker_logger_close_failed", "error", err)
+			}
 		}
 	}()
 

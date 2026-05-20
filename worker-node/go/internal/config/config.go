@@ -13,6 +13,9 @@ type Config struct {
 	TotalSlots         int
 	DataDir            string
 	EngineBinaryPath   string
+	LogLevel           string
+	LogOutput          string
+	LogFile            string
 	HeartbeatInterval  time.Duration
 	DiskTotalBytes     int64
 	DiskFreeBytes      int64
@@ -28,6 +31,9 @@ func FromEnv() Config {
 		TotalSlots:         intFromEnv("WORKER_TOTAL_SLOTS", 4),
 		DataDir:            stringFromEnv("WORKER_DATA_DIR", "worker-node/data"),
 		EngineBinaryPath:   stringFromEnv("WORKER_ENGINE_BINARY", "worker-node/cpp/build/framefleet-engine"),
+		LogLevel:           stringFromEnv("WORKER_LOG_LEVEL", "info"),
+		LogOutput:          stringFromEnv("WORKER_LOG_OUTPUT", "stdout"),
+		LogFile:            stringFromEnv("WORKER_LOG_FILE", "logs/worker-agent.log"),
 		HeartbeatInterval:  durationSecondsFromEnv("WORKER_HEARTBEAT_INTERVAL_SECONDS", 10*time.Second),
 		DiskTotalBytes:     int64FromEnv("WORKER_DISK_TOTAL_BYTES", 1000*1000*1000),
 		DiskFreeBytes:      int64FromEnv("WORKER_DISK_FREE_BYTES", 800*1000*1000),

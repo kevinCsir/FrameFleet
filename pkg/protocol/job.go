@@ -10,11 +10,18 @@ const (
 	CreateJobStatusNotFound              CreateJobStatus = "not_found"
 )
 
-type JobMode string
+type TaskProcessingMode string
 
 const (
-	JobModeInternal JobMode = "internal"
-	JobModeExternal JobMode = "external"
+	TaskProcessingModeInternal TaskProcessingMode = "internal"
+	TaskProcessingModeExternal TaskProcessingMode = "external"
+)
+
+type JobMode = TaskProcessingMode
+
+const (
+	JobModeInternal JobMode = TaskProcessingModeInternal
+	JobModeExternal JobMode = TaskProcessingModeExternal
 )
 
 type JobStatus string
@@ -62,11 +69,17 @@ const (
 )
 
 type CreateJobRequest struct {
-	WorkerID       string  `json:"worker_id" binding:"required"`
-	VideoName      string  `json:"video_name" binding:"required"`
-	SegmentCount   int     `json:"segment_count" binding:"required,min=1"`
-	TotalSizeBytes int64   `json:"total_size_bytes" binding:"required,min=0"`
-	Mode           JobMode `json:"mode" binding:"required"`
+	WorkerID       string                 `json:"worker_id" binding:"required"`
+	VideoName      string                 `json:"video_name" binding:"required"`
+	SegmentCount   int                    `json:"segment_count,omitempty" binding:"omitempty,min=1"`
+	TotalSizeBytes int64                  `json:"total_size_bytes" binding:"required,min=0"`
+	Mode           JobMode                `json:"mode,omitempty"`
+	Tasks          []CreateJobTaskRequest `json:"tasks,omitempty" binding:"omitempty,min=1"`
+}
+
+type CreateJobTaskRequest struct {
+	SegmentIndex int                `json:"segment_index" binding:"min=0"`
+	Mode         TaskProcessingMode `json:"mode" binding:"required"`
 }
 
 type CreateJobResponse struct {
@@ -80,10 +93,11 @@ type CreateJobResponse struct {
 }
 
 type TaskAssignment struct {
-	SegmentIndex int    `json:"segment_index"`
-	TaskID       string `json:"task_id,omitempty"`
-	WorkerID     string `json:"worker_id"`
-	Address      string `json:"address"`
+	SegmentIndex int                `json:"segment_index"`
+	TaskID       string             `json:"task_id,omitempty"`
+	WorkerID     string             `json:"worker_id"`
+	Address      string             `json:"address"`
+	Mode         TaskProcessingMode `json:"mode"`
 }
 
 type JobAssembledRequest struct {

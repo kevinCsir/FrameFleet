@@ -36,9 +36,6 @@ type Request struct {
 	Version      int       `json:"version"`
 	RequestID    string    `json:"request_id"`
 	Operation    Operation `json:"op"`
-	JobID        string    `json:"job_id,omitempty"`
-	TaskID       string    `json:"task_id,omitempty"`
-	SegmentIndex int       `json:"segment_index,omitempty"`
 	SegmentCount int       `json:"segment_count,omitempty"`
 	Input        *FileRef  `json:"input,omitempty"`
 	Inputs       []FileRef `json:"inputs,omitempty"`
@@ -57,9 +54,6 @@ type Response struct {
 	Version         int           `json:"version"`
 	RequestID       string        `json:"request_id"`
 	Type            ResponseType  `json:"type"`
-	JobID           string        `json:"job_id,omitempty"`
-	TaskID          string        `json:"task_id,omitempty"`
-	SegmentIndex    int           `json:"segment_index,omitempty"`
 	ResultName      string        `json:"result_name,omitempty"`
 	ArtifactName    string        `json:"artifact_name,omitempty"`
 	Checksum        string        `json:"checksum,omitempty"`

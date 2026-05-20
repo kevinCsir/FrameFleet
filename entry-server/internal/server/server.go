@@ -48,6 +48,7 @@ func New(registry *service.WorkerRegistry, heartbeatConfig HeartbeatConfig, spli
 
 func (s *Server) Run(addr string) error {
 	s.startWorkerExpiryChecker(context.Background())
+	s.startBackpressureRefresher(context.Background())
 	return s.engine.Run(addr)
 }
 
@@ -78,6 +79,27 @@ func (s *Server) startWorkerExpiryChecker(ctx context.Context) {
 				return
 			case <-ticker.C:
 				s.workerRegistry.MarkExpiredWorkers(s.heartbeatConfig.Timeout)
+			}
+		}
+	}()
+}
+
+func (s *Server) startBackpressureRefresher(ctx context.Context) {
+	if s.heartbeatConfig.CheckInterval <= 0 {
+		return
+	}
+
+	s.workerRegistry.RefreshBackpressureStatus()
+	ticker := time.NewTicker(s.heartbeatConfig.CheckInterval)
+	go func() {
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.workerRegistry.RefreshBackpressureStatus()
 			}
 		}
 	}()

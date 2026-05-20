@@ -2,7 +2,6 @@
   "version": 1,
   "request_id": "req_split_1",
   "op": "split_video",
-  "job_id": "job_123",
   "segment_count": 3,
   "input": {
     "mode": "file",

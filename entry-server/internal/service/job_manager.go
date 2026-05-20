@@ -57,7 +57,8 @@ func NewJobManager(workers *WorkerRegistry, appLogger *logger.Logger) *JobManage
 }
 
 func (m *JobManager) CreateJob(req protocol.CreateJobRequest) (CreateJobResult, error) {
-	if req.Mode != protocol.JobModeInternal && req.Mode != protocol.JobModeExternal {
+	taskPlan, err := createJobTaskPlan(req)
+	if err != nil {
 		return CreateJobResult{}, ErrTaskInvalidState
 	}
 
@@ -70,60 +71,39 @@ func (m *JobManager) CreateJob(req protocol.CreateJobRequest) (CreateJobResult, 
 	if existing, ok := m.findJobByIdentity(identityKey); ok {
 		return CreateJobResult{
 			JobID:         existing.ID,
-			RequiredSlots: req.SegmentCount,
+			RequiredSlots: len(taskPlan),
 			AlreadyExists: true,
 			JobStatus:     protocol.JobStatus(existing.Status),
 		}, nil
 	}
 
-	if req.Mode == protocol.JobModeInternal {
-		return m.createInternalJob(req, sourceWorker, identityKey)
-	}
-
-	return m.createExternalJob(req, identityKey)
+	return m.createJobWithTaskPlan(req, sourceWorker, identityKey, taskPlan)
 }
 
-func (m *JobManager) createExternalJob(req protocol.CreateJobRequest, identityKey string) (CreateJobResult, error) {
-	selectedWorkers, enough := m.workers.PickWorkersForReservation(protocol.TaskTypeProcessSegment, req.SegmentCount)
-	if !enough {
-		return CreateJobResult{
-			RequiredSlots:  req.SegmentCount,
-			AvailableSlots: len(selectedWorkers),
-			Assignments:    previewAssignments(selectedWorkers),
-		}, ErrInsufficientResources
-	}
-
-	sourceWorker, _ := m.workers.GetWorker(req.WorkerID)
-	return m.createJobWithAssignments(req, sourceWorker, selectedWorkers, identityKey)
-}
-
-func (m *JobManager) createInternalJob(req protocol.CreateJobRequest, sourceWorker model.Worker, identityKey string) (CreateJobResult, error) {
-	selectedWorkers, enough := m.workers.ReserveWorkerSlots(sourceWorker.ID, protocol.TaskTypeProcessSegment, req.SegmentCount)
-	if !enough {
-		return CreateJobResult{
-			RequiredSlots:  req.SegmentCount,
-			AvailableSlots: len(selectedWorkers),
-			Assignments:    previewAssignments(selectedWorkers),
-		}, ErrInsufficientResources
-	}
-
-	return m.createJobWithAssignments(req, sourceWorker, selectedWorkers, identityKey)
-}
-
-func (m *JobManager) createJobWithAssignments(req protocol.CreateJobRequest, sourceWorker model.Worker, selectedWorkers []model.Worker, identityKey string) (CreateJobResult, error) {
-	reservedWorkerIDs := workerIDs(selectedWorkers)
+func (m *JobManager) createJobWithTaskPlan(req protocol.CreateJobRequest, sourceWorker model.Worker, identityKey string, taskPlan []protocol.CreateJobTaskRequest) (CreateJobResult, error) {
+	reservedWorkerIDs := make([]string, 0, len(taskPlan))
 	now := time.Now().UTC()
 	jobID, err := nextID("job_")
 	if err != nil {
-		m.workers.ReleaseReservations(reservedWorkerIDs)
 		return CreateJobResult{}, err
 	}
 
-	assignments := make([]protocol.TaskAssignment, 0, req.SegmentCount)
-	taskIDs := make([]string, 0, req.SegmentCount)
-	tasks := make([]*model.Task, 0, req.SegmentCount)
+	assignments := make([]protocol.TaskAssignment, 0, len(taskPlan))
+	taskIDs := make([]string, 0, len(taskPlan))
+	tasks := make([]*model.Task, 0, len(taskPlan))
 
-	for segmentIndex, worker := range selectedWorkers {
+	for _, taskReq := range taskPlan {
+		worker, ok := m.assignSegmentWorker(sourceWorker, taskReq.Mode)
+		if !ok {
+			m.workers.ReleaseReservations(reservedWorkerIDs)
+			return CreateJobResult{
+				RequiredSlots:  len(taskPlan),
+				AvailableSlots: len(assignments),
+				Assignments:    assignments,
+			}, ErrInsufficientResources
+		}
+		reservedWorkerIDs = append(reservedWorkerIDs, worker.ID)
+
 		taskID, err := nextID("task_")
 		if err != nil {
 			m.workers.ReleaseReservations(reservedWorkerIDs)
@@ -131,23 +111,31 @@ func (m *JobManager) createJobWithAssignments(req protocol.CreateJobRequest, sou
 		}
 
 		task := &model.Task{
-			ID:               taskID,
-			JobID:            jobID,
-			Type:             protocol.TaskTypeProcessSegment,
-			SegmentIndex:     segmentIndex,
-			AssignedWorkerID: worker.ID,
-			Status:           model.TaskStatusAssigned,
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			ID:                    taskID,
+			JobID:                 jobID,
+			Type:                  protocol.TaskTypeProcessSegment,
+			SegmentIndex:          taskReq.SegmentIndex,
+			ProcessingMode:        taskReq.Mode,
+			AssignedWorkerID:      worker.ID,
+			AssignedWorkerAddress: worker.Address,
+			Status:                model.TaskStatusAssigned,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		}
+
+		address := worker.Address
+		if taskReq.Mode == protocol.TaskProcessingModeInternal {
+			address = ""
 		}
 
 		tasks = append(tasks, task)
 		taskIDs = append(taskIDs, taskID)
 		assignments = append(assignments, protocol.TaskAssignment{
-			SegmentIndex: segmentIndex,
+			SegmentIndex: taskReq.SegmentIndex,
 			TaskID:       taskID,
 			WorkerID:     worker.ID,
-			Address:      worker.Address,
+			Address:      address,
+			Mode:         taskReq.Mode,
 		})
 	}
 
@@ -156,9 +144,9 @@ func (m *JobManager) createJobWithAssignments(req protocol.CreateJobRequest, sou
 		SourceWorkerID:      req.WorkerID,
 		SourceWorkerAddress: sourceWorker.Address,
 		VideoName:           req.VideoName,
-		SegmentCount:        req.SegmentCount,
+		SegmentCount:        len(taskPlan),
 		TotalSizeBytes:      req.TotalSizeBytes,
-		Mode:                req.Mode,
+		Mode:                jobModeFromTaskPlan(taskPlan),
 		IdentityKey:         identityKey,
 		Status:              model.JobStatusSegmentAssigned,
 		TaskIDs:             taskIDs,
@@ -174,7 +162,7 @@ func (m *JobManager) createJobWithAssignments(req protocol.CreateJobRequest, sou
 		existing := m.jobs[existingJobID]
 		return CreateJobResult{
 			JobID:         existing.ID,
-			RequiredSlots: req.SegmentCount,
+			RequiredSlots: len(taskPlan),
 			AlreadyExists: true,
 			JobStatus:     protocol.JobStatus(existing.Status),
 		}, nil
@@ -192,18 +180,68 @@ func (m *JobManager) createJobWithAssignments(req protocol.CreateJobRequest, sou
 		"source_worker_id", req.WorkerID,
 		"source_worker_address", sourceWorker.Address,
 		"video_name", req.VideoName,
-		"segment_count", req.SegmentCount,
+		"segment_count", len(taskPlan),
 		"total_size_bytes", req.TotalSizeBytes,
-		"mode", string(req.Mode),
 	)
 
 	return CreateJobResult{
 		JobID:          jobID,
 		JobStatus:      protocol.JobStatus(job.Status),
-		RequiredSlots:  req.SegmentCount,
+		RequiredSlots:  len(taskPlan),
 		AvailableSlots: len(assignments),
 		Assignments:    assignments,
 	}, nil
+}
+
+func createJobTaskPlan(req protocol.CreateJobRequest) ([]protocol.CreateJobTaskRequest, error) {
+	if len(req.Tasks) > 0 {
+		for _, taskReq := range req.Tasks {
+			if taskReq.Mode != protocol.TaskProcessingModeInternal && taskReq.Mode != protocol.TaskProcessingModeExternal {
+				return nil, ErrTaskInvalidState
+			}
+		}
+		return req.Tasks, nil
+	}
+
+	if req.SegmentCount <= 0 {
+		return nil, ErrTaskInvalidState
+	}
+	if req.Mode != protocol.JobModeInternal && req.Mode != protocol.JobModeExternal {
+		return nil, ErrTaskInvalidState
+	}
+
+	tasks := make([]protocol.CreateJobTaskRequest, 0, req.SegmentCount)
+	for segmentIndex := 0; segmentIndex < req.SegmentCount; segmentIndex++ {
+		tasks = append(tasks, protocol.CreateJobTaskRequest{
+			SegmentIndex: segmentIndex,
+			Mode:         protocol.TaskProcessingMode(req.Mode),
+		})
+	}
+	return tasks, nil
+}
+
+func jobModeFromTaskPlan(taskPlan []protocol.CreateJobTaskRequest) protocol.JobMode {
+	for _, taskReq := range taskPlan {
+		if taskReq.Mode == protocol.TaskProcessingModeExternal {
+			return protocol.JobModeExternal
+		}
+	}
+	return protocol.JobModeInternal
+}
+
+func (m *JobManager) assignSegmentWorker(sourceWorker model.Worker, mode protocol.TaskProcessingMode) (model.Worker, bool) {
+	switch mode {
+	case protocol.TaskProcessingModeInternal:
+		selected, ok := m.workers.ReserveWorkerSlots(sourceWorker.ID, protocol.TaskTypeProcessSegment, 1)
+		if !ok || len(selected) == 0 {
+			return model.Worker{}, false
+		}
+		return selected[0], true
+	case protocol.TaskProcessingModeExternal:
+		return m.workers.ReserveLeastBusyWorker(protocol.TaskTypeProcessSegment, sourceWorker.ID)
+	default:
+		return model.Worker{}, false
+	}
 }
 
 func (m *JobManager) findJobByIdentity(identityKey string) (model.Job, bool) {
@@ -371,7 +409,7 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 	}
 
 	sourceWorkerID := job.SourceWorkerID
-	jobMode := job.Mode
+	sourceWorkerAddress := job.SourceWorkerAddress
 	videoName := job.VideoName
 	totalSizeBytes := job.TotalSizeBytes
 	jobTaskIDs := append([]string(nil), job.TaskIDs...)
@@ -380,6 +418,7 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 		segmentIndex    int
 		taskID          string
 		workerID        string
+		workerAddress   string
 		checksum        string
 		frameCount      int
 		outputSizeBytes int64
@@ -403,6 +442,7 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 			segmentIndex:    task.SegmentIndex,
 			taskID:          task.ID,
 			workerID:        task.AssignedWorkerID,
+			workerAddress:   task.AssignedWorkerAddress,
 			checksum:        task.Checksum,
 			frameCount:      task.FrameCount,
 			outputSizeBytes: task.OutputSizeBytes,
@@ -410,28 +450,13 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 	}
 	m.mu.RUnlock()
 
-	if jobMode == protocol.JobModeInternal {
-		return nil
-	}
-
-	sourceWorker, ok := m.workers.GetWorker(sourceWorkerID)
-	if !ok {
-		m.markJobFailed(jobID)
-		return ErrWorkerNotFound
-	}
-
 	segments := make([]protocol.AssembleSegmentRef, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		worker, ok := m.workers.GetWorker(snapshot.workerID)
-		if !ok {
-			m.markJobFailed(jobID)
-			return ErrWorkerNotFound
-		}
 		segments = append(segments, protocol.AssembleSegmentRef{
 			SegmentIndex:    snapshot.segmentIndex,
 			TaskID:          snapshot.taskID,
-			WorkerID:        worker.ID,
-			WorkerAddress:   worker.Address,
+			WorkerID:        snapshot.workerID,
+			WorkerAddress:   snapshot.workerAddress,
 			Checksum:        snapshot.checksum,
 			FrameCount:      snapshot.frameCount,
 			OutputSizeBytes: snapshot.outputSizeBytes,
@@ -454,15 +479,16 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 
 	now := time.Now().UTC()
 	assembleTask := &model.Task{
-		ID:                taskID,
-		JobID:             job.ID,
-		Type:              protocol.TaskTypeAssembleGIF,
-		SegmentIndex:      -1,
-		AssignedWorkerID:  assembleWorker.ID,
-		Status:            model.TaskStatusAssigned,
-		RequiredDiskBytes: requiredDiskBytes,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                    taskID,
+		JobID:                 job.ID,
+		Type:                  protocol.TaskTypeAssembleGIF,
+		SegmentIndex:          -1,
+		AssignedWorkerID:      assembleWorker.ID,
+		AssignedWorkerAddress: assembleWorker.Address,
+		Status:                model.TaskStatusAssigned,
+		RequiredDiskBytes:     requiredDiskBytes,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 
 	m.mu.Lock()
@@ -482,8 +508,8 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 		AssembleTaskID: taskID,
 		Video: protocol.AssembleVideoInfo{
 			Name:                videoName,
-			SourceWorkerID:      sourceWorker.ID,
-			SourceWorkerAddress: sourceWorker.Address,
+			SourceWorkerID:      sourceWorkerID,
+			SourceWorkerAddress: sourceWorkerAddress,
 			TotalSizeBytes:      totalSizeBytes,
 		},
 		Segments: segments,
@@ -588,21 +614,26 @@ func (m *JobManager) completeAssembleJob(jobID string, req protocol.JobAssembled
 	job.UpdatedAt = now
 
 	notify := m.jobResultNotificationLocked(job, protocol.JobResultStatusSuccess)
-	shouldNotify := job.Mode == protocol.JobModeExternal
 	m.mu.Unlock()
 
 	if releaseWorkerID != "" {
 		m.workers.ReleaseReservation(releaseWorkerID, releaseDiskBytes)
 	}
-	if shouldNotify {
-		m.notifySourceWorkerBestEffort(job.SourceWorkerAddress, notify)
-	}
+	m.notifySourceWorkerBestEffort(job.SourceWorkerAddress, notify)
 
 	m.logger.Info("job assembled",
 		"event", "job_assembled",
 		"job_id", jobID,
-		"worker_id", req.WorkerID,
+		"video_name", job.VideoName,
+		"source_worker_id", job.SourceWorkerID,
+		"source_worker_address", job.SourceWorkerAddress,
+		"result_worker_id", resultWorker.ID,
+		"result_worker_address", resultWorker.Address,
+		"result_name", resultName,
 		"result_uri", resultURI,
+		"checksum", req.Checksum,
+		"duration_ms", req.DurationMS,
+		"output_size_bytes", req.OutputSizeBytes,
 	)
 
 	return nil
@@ -639,15 +670,12 @@ func (m *JobManager) failAssembleJob(jobID string, req protocol.JobAssembledRequ
 	job.UpdatedAt = now
 
 	notify := m.jobResultNotificationLocked(job, protocol.JobResultStatusFailed)
-	shouldNotify := job.Mode == protocol.JobModeExternal
 	m.mu.Unlock()
 
 	if releaseWorkerID != "" {
 		m.workers.ReleaseReservation(releaseWorkerID, releaseDiskBytes)
 	}
-	if shouldNotify {
-		m.notifySourceWorkerBestEffort(job.SourceWorkerAddress, notify)
-	}
+	m.notifySourceWorkerBestEffort(job.SourceWorkerAddress, notify)
 
 	m.logger.Warn("job assemble failed",
 		"event", "job_assemble_failed",
@@ -734,13 +762,6 @@ func (m *JobManager) allSegmentTasksCompletedLocked(job *model.Job) bool {
 func (m *JobManager) assembleCompletionTargetLocked(job *model.Job, workerID string) (*model.Task, string, int64, error) {
 	if job.Status != model.JobStatusAssembleAssigned && job.Status != model.JobStatusAssembleRunning && job.Status != model.JobStatusSegmentCompleted {
 		return nil, "", 0, ErrTaskInvalidState
-	}
-
-	if job.Mode == protocol.JobModeInternal {
-		if workerID != job.SourceWorkerID {
-			return nil, "", 0, ErrTaskWorkerMismatch
-		}
-		return nil, "", 0, nil
 	}
 
 	for _, taskID := range job.TaskIDs {
@@ -880,26 +901,6 @@ func estimateAssembleDiskBytes(totalSizeBytes int64, totalOutputSize int64, allO
 
 func resultURI(address string, resultName string) string {
 	return "http://" + address + "/results/" + resultName
-}
-
-func previewAssignments(workers []model.Worker) []protocol.TaskAssignment {
-	assignments := make([]protocol.TaskAssignment, 0, len(workers))
-	for segmentIndex, worker := range workers {
-		assignments = append(assignments, protocol.TaskAssignment{
-			SegmentIndex: segmentIndex,
-			WorkerID:     worker.ID,
-			Address:      worker.Address,
-		})
-	}
-	return assignments
-}
-
-func workerIDs(workers []model.Worker) []string {
-	ids := make([]string, len(workers))
-	for i, worker := range workers {
-		ids[i] = worker.ID
-	}
-	return ids
 }
 
 func jobIdentityKey(sourceWorkerAddress string, videoName string) string {

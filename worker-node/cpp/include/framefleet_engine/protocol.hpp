@@ -22,9 +22,6 @@ struct Request {
     int version = 0;
     std::string request_id;
     std::string op;
-    std::string job_id;
-    std::string task_id;
-    int segment_index = 0;
     int segment_count = 0;
     std::optional<FileRef> input;
     std::vector<FileRef> inputs;
@@ -43,9 +40,6 @@ struct Response {
     int version = kProtocolVersion;
     std::string request_id;
     std::string type;
-    std::string job_id;
-    std::string task_id;
-    int segment_index = 0;
     std::string result_name;
     std::string artifact_name;
     std::string checksum;
@@ -62,8 +56,6 @@ nlohmann::json response_to_json(const Response& response);
 
 Response make_completed_response(const Request& request);
 Response make_failed_response(const std::string& request_id,
-                              const std::string& job_id,
-                              const std::string& task_id,
                               const std::string& reason,
                               bool retryable);
 Response make_failed_response(const Request& request, const std::string& reason, bool retryable);

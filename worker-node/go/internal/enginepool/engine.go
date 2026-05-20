@@ -105,11 +105,15 @@ func (e *Engine) Call(ctx context.Context, req engineprotocol.Request) (enginepr
 		return engineprotocol.Response{}, fmt.Errorf("marshal engine request: %w", err)
 	}
 
-	if err := writeLine(ctx, e.stdin, body); err != nil {
+	if err := ctx.Err(); err != nil {
 		return engineprotocol.Response{}, err
 	}
 
-	line, err := readLine(ctx, e.stdout)
+	if err := writeLine(e.stdin, body); err != nil {
+		return engineprotocol.Response{}, err
+	}
+
+	line, err := readLine(e.stdout)
 	if err != nil {
 		return engineprotocol.Response{}, err
 	}
@@ -123,6 +127,9 @@ func (e *Engine) Call(ctx context.Context, req engineprotocol.Request) (enginepr
 	}
 	if resp.Version != engineprotocol.Version {
 		return engineprotocol.Response{}, fmt.Errorf("engine response version mismatch: got %d want %d", resp.Version, engineprotocol.Version)
+	}
+	if err := ctx.Err(); err != nil {
+		return engineprotocol.Response{}, err
 	}
 
 	return resp, nil
@@ -180,42 +187,17 @@ func (e *Engine) logStderr(stderr io.Reader) {
 	}
 }
 
-func writeLine(ctx context.Context, writer io.Writer, body []byte) error {
-	done := make(chan error, 1)
-	go func() {
-		_, err := writer.Write(append(body, '\n'))
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("write engine request: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+func writeLine(writer io.Writer, body []byte) error {
+	if _, err := writer.Write(append(body, '\n')); err != nil {
+		return fmt.Errorf("write engine request: %w", err)
 	}
+	return nil
 }
 
-func readLine(ctx context.Context, reader *bufio.Reader) ([]byte, error) {
-	type result struct {
-		line []byte
-		err  error
+func readLine(reader *bufio.Reader) ([]byte, error) {
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read engine response: %w", err)
 	}
-	done := make(chan result, 1)
-	go func() {
-		line, err := reader.ReadBytes('\n')
-		done <- result{line: line, err: err}
-	}()
-
-	select {
-	case result := <-done:
-		if result.err != nil {
-			return nil, fmt.Errorf("read engine response: %w", result.err)
-		}
-		return result.line, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return line, nil
 }

@@ -69,26 +69,26 @@ void validate_request(const Request& request) {
         return;
     }
     if (request.op == "process_internal_simple") {
-        if (request.job_id.empty() || !request.input || !request.output) {
-            throw std::runtime_error("process_internal_simple requires job_id, input, and output");
+        if (!request.input || !request.output) {
+            throw std::runtime_error("process_internal_simple requires input and output");
         }
         return;
     }
     if (request.op == "split_video") {
-        if (request.job_id.empty() || !request.input || request.output_dir.empty() || request.segment_count <= 0) {
-            throw std::runtime_error("split_video requires job_id, input, output_dir, and positive segment_count");
+        if (!request.input || request.output_dir.empty() || request.segment_count <= 0) {
+            throw std::runtime_error("split_video requires input, output_dir, and positive segment_count");
         }
         return;
     }
     if (request.op == "process_segment") {
-        if (request.task_id.empty() || !request.input || !request.output) {
-            throw std::runtime_error("process_segment requires task_id, input, and output");
+        if (!request.input || !request.output) {
+            throw std::runtime_error("process_segment requires input and output");
         }
         return;
     }
     if (request.op == "assemble_gif") {
-        if (request.job_id.empty() || request.inputs.empty() || !request.output) {
-            throw std::runtime_error("assemble_gif requires job_id, inputs, and output");
+        if (request.inputs.empty() || !request.output) {
+            throw std::runtime_error("assemble_gif requires inputs and output");
         }
         return;
     }
@@ -123,13 +123,6 @@ Request parse_request_line(const std::string& line) {
     request.version = json.at("version").get<int>();
     request.request_id = required_string(json, "request_id");
     request.op = required_string(json, "op");
-    if (json.contains("job_id")) {
-        request.job_id = required_string(json, "job_id");
-    }
-    if (json.contains("task_id")) {
-        request.task_id = required_string(json, "task_id");
-    }
-    request.segment_index = optional_int(json, "segment_index", 0);
     request.segment_count = optional_int(json, "segment_count", 0);
     if (json.contains("input")) {
         request.input = parse_file_ref(json.at("input"), "input");
@@ -160,9 +153,6 @@ nlohmann::json response_to_json(const Response& response) {
         {"type", response.type},
     };
 
-    set_if_not_empty(json, "job_id", response.job_id);
-    set_if_not_empty(json, "task_id", response.task_id);
-    json["segment_index"] = response.segment_index;
     set_if_not_empty(json, "result_name", response.result_name);
     set_if_not_empty(json, "artifact_name", response.artifact_name);
     set_if_not_empty(json, "checksum", response.checksum);
@@ -197,29 +187,22 @@ Response make_completed_response(const Request& request) {
     Response response;
     response.request_id = request.request_id;
     response.type = "completed";
-    response.job_id = request.job_id;
-    response.task_id = request.task_id;
-    response.segment_index = request.segment_index;
     return response;
 }
 
 Response make_failed_response(const std::string& request_id,
-                              const std::string& job_id,
-                              const std::string& task_id,
                               const std::string& reason,
                               bool retryable) {
     Response response;
     response.request_id = request_id;
     response.type = "failed";
-    response.job_id = job_id;
-    response.task_id = task_id;
     response.reason = reason;
     response.retryable = retryable;
     return response;
 }
 
 Response make_failed_response(const Request& request, const std::string& reason, bool retryable) {
-    return make_failed_response(request.request_id, request.job_id, request.task_id, reason, retryable);
+    return make_failed_response(request.request_id, reason, retryable);
 }
 
 std::string basename_from_path(const std::string& path) {

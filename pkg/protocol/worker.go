@@ -48,7 +48,15 @@ type HeartbeatWorkerRequest struct {
 }
 
 type HeartbeatWorkerResponse struct {
-	Status HeartbeatWorkerStatus `json:"status"`
+	Status             HeartbeatWorkerStatus `json:"status"`
+	GlobalBackpressure BackpressureStatus    `json:"global_backpressure,omitempty"`
+}
+
+type BackpressureStatus struct {
+	Active                  bool   `json:"active"`
+	Reason                  string `json:"reason,omitempty"`
+	BusyThresholdMultiplier int    `json:"busy_threshold_multiplier,omitempty"`
+	ObservedWorkerCount     int    `json:"observed_worker_count,omitempty"`
 }
 
 type TaskRunMetric struct {

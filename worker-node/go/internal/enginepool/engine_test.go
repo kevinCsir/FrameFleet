@@ -38,8 +38,8 @@ func TestPoolCallWaitsForIdleEngine(t *testing.T) {
 	var firstDone atomic.Bool
 	go func() {
 		_, err := pool.Call(context.Background(), engineprotocol.Request{
+			RequestID: "sleep",
 			Operation: engineprotocol.OpPing,
-			JobID:     "sleep",
 		})
 		if err != nil {
 			t.Errorf("first call failed: %v", err)
@@ -72,8 +72,8 @@ func TestPoolTryCallReturnsNoIdleEngine(t *testing.T) {
 	go func() {
 		defer close(done)
 		_, err := pool.Call(context.Background(), engineprotocol.Request{
+			RequestID: "sleep",
 			Operation: engineprotocol.OpPing,
-			JobID:     "sleep",
 		})
 		if err != nil {
 			t.Errorf("blocking call failed: %v", err)
@@ -87,6 +87,32 @@ func TestPoolTryCallReturnsNoIdleEngine(t *testing.T) {
 	}
 
 	<-done
+}
+
+func TestPoolCallDrainsResponseAfterContextCancel(t *testing.T) {
+	pool := newTestPool(t, 1)
+	startPool(t, pool)
+	defer stopPool(t, pool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := pool.Call(ctx, engineprotocol.Request{
+		RequestID: "sleep",
+		Operation: engineprotocol.OpPing,
+	}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first call error = %v, want context deadline exceeded", err)
+	}
+
+	resp, err := pool.Call(context.Background(), engineprotocol.Request{
+		RequestID: "after_sleep",
+		Operation: engineprotocol.OpPing,
+	})
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if resp.RequestID != "after_sleep" {
+		t.Fatalf("second response request_id = %q, want after_sleep", resp.RequestID)
+	}
 }
 
 func newTestPool(t *testing.T, slots int) *Pool {
@@ -143,15 +169,13 @@ func TestEngineHelperProcess(t *testing.T) {
 			})
 			continue
 		}
-		if req.JobID == "sleep" {
+		if req.RequestID == "sleep" {
 			time.Sleep(150 * time.Millisecond)
 		}
 		_ = encoder.Encode(engineprotocol.Response{
 			Version:   engineprotocol.Version,
 			RequestID: req.RequestID,
 			Type:      engineprotocol.ResponseTypeCompleted,
-			JobID:     req.JobID,
-			TaskID:    req.TaskID,
 		})
 	}
 

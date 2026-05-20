@@ -215,6 +215,16 @@ Current implementation:
 
 Deferred implementation:
 
+- Harden the engine slot process manager. Each slot should behave like a
+  well-contained child-process RPC client: detect child death and broken pipes,
+  retire broken slots instead of returning them to the idle pool, restart child
+  processes, optionally retry idempotent requests with a bounded retry count,
+  and return clear errors when retries are exhausted.
+- Define cancellation semantics inside the slot manager. If Go gives up waiting
+  for a response after a request has been written, the slot must not be returned
+  to the idle pool until the stale response is drained and matched, or the child
+  process is restarted. This prevents the next caller from reading the previous
+  request's response.
 - Consider changing segment upload to asynchronous processing: return success to
   the source worker after the segment is durably received and accepted, then run
   `process_segment` in a background goroutine and report completed/failed to

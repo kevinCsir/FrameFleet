@@ -60,7 +60,6 @@ func TestCppEngineFakeOperations(t *testing.T) {
 		outputPath := filepath.Join(tmp, "results", "job_123.gif")
 		resp := callEngine(t, pool, engineprotocol.Request{
 			Operation: engineprotocol.OpProcessInternalSimple,
-			JobID:     "job_123",
 			Input:     fileRef(inputPath, "input.mp4"),
 			Output:    fileRef(outputPath, "job_123.gif"),
 		})
@@ -74,7 +73,6 @@ func TestCppEngineFakeOperations(t *testing.T) {
 		outputDir := filepath.Join(tmp, "outgoing", "job_123")
 		resp := callEngine(t, pool, engineprotocol.Request{
 			Operation:    engineprotocol.OpSplitVideo,
-			JobID:        "job_123",
 			SegmentCount: 3,
 			Input:        fileRef(inputPath, "input.mp4"),
 			OutputDir:    outputDir,
@@ -82,22 +80,20 @@ func TestCppEngineFakeOperations(t *testing.T) {
 		if resp.Type != engineprotocol.ResponseTypeCompleted {
 			t.Fatalf("type = %q, want completed", resp.Type)
 		}
-		if len(resp.Segments) != 2 {
-			t.Fatalf("segments = %d, want 2", len(resp.Segments))
+		if len(resp.Segments) != 3 {
+			t.Fatalf("segments = %d, want 3", len(resp.Segments))
 		}
-		assertFileEquals(t, filepath.Join(outputDir, "segment_0.mp4"), []byte("fake-vid"))
-		assertFileEquals(t, filepath.Join(outputDir, "segment_1.mp4"), []byte("eo-bytes"))
+		assertFileEquals(t, filepath.Join(outputDir, "segment_0.mp4"), []byte("fake-v"))
+		assertFileEquals(t, filepath.Join(outputDir, "segment_1.mp4"), []byte("ideo-"))
+		assertFileEquals(t, filepath.Join(outputDir, "segment_2.mp4"), []byte("bytes"))
 	})
 
 	t.Run("process_segment", func(t *testing.T) {
 		outputPath := filepath.Join(tmp, "artifacts", "task_123.segment")
 		resp := callEngine(t, pool, engineprotocol.Request{
-			Operation:    engineprotocol.OpProcessSegment,
-			JobID:        "job_123",
-			TaskID:       "task_123",
-			SegmentIndex: 0,
-			Input:        fileRef(inputPath, "task_123.input"),
-			Output:       fileRef(outputPath, "task_123.segment"),
+			Operation: engineprotocol.OpProcessSegment,
+			Input:     fileRef(inputPath, "task_123.input"),
+			Output:    fileRef(outputPath, "task_123.segment"),
 		})
 		if resp.Type != engineprotocol.ResponseTypeCompleted {
 			t.Fatalf("type = %q, want completed", resp.Type)
@@ -114,7 +110,6 @@ func TestCppEngineFakeOperations(t *testing.T) {
 
 		resp := callEngine(t, pool, engineprotocol.Request{
 			Operation: engineprotocol.OpAssembleGIF,
-			JobID:     "job_123",
 			Inputs: []engineprotocol.FileRef{
 				*fileRef(first, "first.segment"),
 				*fileRef(second, "second.segment"),

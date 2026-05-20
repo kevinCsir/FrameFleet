@@ -57,10 +57,16 @@ func (l *Loop) send(ctx context.Context) {
 		return
 	}
 
-	if _, err := l.client.HeartbeatWorker(ctx, req); err != nil {
+	resp, err := l.client.HeartbeatWorker(ctx, req)
+	if err != nil {
 		l.logger.Warn("worker heartbeat failed", "event", "worker_heartbeat_failed", "worker_id", req.WorkerID, "error", err)
 		return
 	}
+	l.state.SetBackpressure(resp.GlobalBackpressure)
 
-	l.logger.Info("worker heartbeat sent", "event", "worker_heartbeat_sent", "worker_id", req.WorkerID)
+	l.logger.Info("worker heartbeat sent",
+		"event", "worker_heartbeat_sent",
+		"worker_id", req.WorkerID,
+		"backpressure_active", resp.GlobalBackpressure.Active,
+	)
 }

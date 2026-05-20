@@ -71,7 +71,7 @@ func TestOperationSpecificExamples(t *testing.T) {
 
 	var process Request
 	readExample(t, "process_segment.request.json", &process)
-	if process.Operation != OpProcessSegment || process.Input == nil || process.Output == nil || process.TaskID == "" {
+	if process.Operation != OpProcessSegment || process.Input == nil || process.Output == nil {
 		t.Fatalf("invalid process_segment request: %+v", process)
 	}
 

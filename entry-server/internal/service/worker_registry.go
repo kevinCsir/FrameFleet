@@ -28,7 +28,11 @@ type WorkerRegistry struct {
 	byID     map[string]*model.Worker
 	idByAddr map[string]string
 	addrByID map[string]string
+
+	backpressure protocol.BackpressureStatus
 }
+
+const backpressureBusyThresholdMultiplier = 3
 
 func NewWorkerRegistry(appLogger *logger.Logger) *WorkerRegistry {
 	return &WorkerRegistry{
@@ -36,6 +40,10 @@ func NewWorkerRegistry(appLogger *logger.Logger) *WorkerRegistry {
 		byID:     make(map[string]*model.Worker),
 		idByAddr: make(map[string]string),
 		addrByID: make(map[string]string),
+		backpressure: protocol.BackpressureStatus{
+			Active:                  false,
+			BusyThresholdMultiplier: backpressureBusyThresholdMultiplier,
+		},
 	}
 }
 
@@ -147,6 +155,41 @@ func (r *WorkerRegistry) MarkExpiredWorkers(timeout time.Duration) int {
 	return expired
 }
 
+func (r *WorkerRegistry) RefreshBackpressureStatus() protocol.BackpressureStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	observed := 0
+	allOverThreshold := true
+	for _, worker := range r.byID {
+		if !worker.Online {
+			continue
+		}
+		observed++
+		threshold := worker.TotalSlots * backpressureBusyThresholdMultiplier
+		if threshold <= 0 || worker.ReservedSlots < threshold {
+			allOverThreshold = false
+		}
+	}
+
+	status := protocol.BackpressureStatus{
+		Active:                  observed > 0 && allOverThreshold,
+		BusyThresholdMultiplier: backpressureBusyThresholdMultiplier,
+		ObservedWorkerCount:     observed,
+	}
+	if status.Active {
+		status.Reason = "all_workers_over_busy_threshold"
+	}
+	r.backpressure = status
+	return status
+}
+
+func (r *WorkerRegistry) BackpressureStatus() protocol.BackpressureStatus {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.backpressure
+}
+
 func (r *WorkerRegistry) GetWorker(id string) (model.Worker, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -164,7 +207,7 @@ func (r *WorkerRegistry) PickBestWorker(taskType protocol.TaskType) (model.Worke
 
 	var best *model.Worker
 	for _, worker := range r.byID {
-		if !worker.Online || worker.FreeSlots <= 0 || !worker.Supports(taskType) {
+		if !worker.Online || !worker.Supports(taskType) {
 			continue
 		}
 		if best == nil || worker.FreeSlots > best.FreeSlots {
@@ -223,7 +266,7 @@ func (r *WorkerRegistry) ReserveWorkerSlots(workerID string, taskType protocol.T
 	}
 
 	worker, ok := r.byID[workerID]
-	if !ok || !worker.Online || !worker.Supports(taskType) || worker.FreeSlots < count {
+	if !ok || !worker.Online || !worker.Supports(taskType) {
 		return nil, false
 	}
 
@@ -239,6 +282,42 @@ func (r *WorkerRegistry) ReserveWorkerSlots(workerID string, taskType protocol.T
 	return cloneWorkers(selected), true
 }
 
+func (r *WorkerRegistry) ReserveLeastBusyWorker(taskType protocol.TaskType, fallbackWorkerID string) (model.Worker, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var best *model.Worker
+	for _, worker := range r.byID {
+		if !worker.Online || !worker.Supports(taskType) {
+			continue
+		}
+		if worker.ID == fallbackWorkerID && best != nil {
+			continue
+		}
+		if best == nil ||
+			(best.ID == fallbackWorkerID && worker.ID != fallbackWorkerID) ||
+			worker.ReservedSlots < best.ReservedSlots ||
+			(worker.ReservedSlots == best.ReservedSlots && worker.ID < best.ID) {
+			best = worker
+		}
+	}
+
+	if best == nil && fallbackWorkerID != "" {
+		if worker, ok := r.byID[fallbackWorkerID]; ok && worker.Online && worker.Supports(taskType) {
+			best = worker
+		}
+	}
+	if best == nil {
+		return model.Worker{}, false
+	}
+
+	best.ReservedSlots++
+	best.FreeSlots = calculateFreeSlots(best.TotalSlots, best.ReservedSlots)
+	best.UpdatedAt = time.Now().UTC()
+
+	return cloneWorker(best), true
+}
+
 func (r *WorkerRegistry) PickWorkerForDiskReservation(taskType protocol.TaskType, requiredDiskBytes int64) (model.Worker, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -247,7 +326,7 @@ func (r *WorkerRegistry) PickWorkerForDiskReservation(taskType protocol.TaskType
 	var bestSchedulableDisk int64
 
 	for _, worker := range r.byID {
-		if !worker.Online || worker.FreeSlots <= 0 || !worker.Supports(taskType) {
+		if !worker.Online || !worker.Supports(taskType) {
 			continue
 		}
 
@@ -257,8 +336,9 @@ func (r *WorkerRegistry) PickWorkerForDiskReservation(taskType protocol.TaskType
 		}
 
 		if best == nil ||
-			worker.FreeSlots > best.FreeSlots ||
-			(worker.FreeSlots == best.FreeSlots && schedulableDisk > bestSchedulableDisk) {
+			worker.ReservedSlots < best.ReservedSlots ||
+			(worker.ReservedSlots == best.ReservedSlots && schedulableDisk > bestSchedulableDisk) ||
+			(worker.ReservedSlots == best.ReservedSlots && schedulableDisk == bestSchedulableDisk && worker.ID < best.ID) {
 			best = worker
 			bestSchedulableDisk = schedulableDisk
 		}
@@ -373,11 +453,7 @@ func validateHeartbeatWorkerRequest(req protocol.HeartbeatWorkerRequest) error {
 }
 
 func calculateFreeSlots(totalSlots, reservedSlots int) int {
-	freeSlots := totalSlots - reservedSlots
-	if freeSlots < 0 {
-		return 0
-	}
-	return freeSlots
+	return totalSlots - reservedSlots
 }
 
 func cloneTaskTypes(tasks []protocol.TaskType) []protocol.TaskType {

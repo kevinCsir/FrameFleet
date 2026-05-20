@@ -19,7 +19,7 @@ int main() {
             const auto response = framefleet_engine::handle_request(request);
             std::cout << framefleet_engine::response_to_json(response).dump() << std::endl;
         } catch (const std::exception& err) {
-            const auto response = framefleet_engine::make_failed_response("", "", "", err.what(), false);
+            const auto response = framefleet_engine::make_failed_response("", err.what(), false);
             std::cout << framefleet_engine::response_to_json(response).dump() << std::endl;
         }
     }

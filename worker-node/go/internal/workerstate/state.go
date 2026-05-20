@@ -18,6 +18,7 @@ type State struct {
 	cfg          Config
 	workerID     string
 	splitPolicy  protocol.SplitPolicy
+	backpressure protocol.BackpressureStatus
 	runningTasks map[string]protocol.TaskType
 }
 
@@ -43,6 +44,18 @@ func (s *State) SplitPolicy() protocol.SplitPolicy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.splitPolicy
+}
+
+func (s *State) SetBackpressure(status protocol.BackpressureStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.backpressure = status
+}
+
+func (s *State) BackpressureActive() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.backpressure.Active
 }
 
 func (s *State) StartTask(taskID string, taskType protocol.TaskType) {

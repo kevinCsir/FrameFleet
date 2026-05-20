@@ -37,7 +37,7 @@ func (h *JobHandler) Create(c *gin.Context) {
 			h.logger.Warn("job create source worker not found", "event", "job_create_worker_not_found", "worker_id", req.WorkerID)
 			c.JSON(http.StatusNotFound, protocol.CreateJobResponse{
 				Status:        protocol.CreateJobStatusNotFound,
-				RequiredSlots: req.SegmentCount,
+				RequiredSlots: requestedTaskCount(req),
 			})
 		case errors.Is(err, service.ErrInsufficientResources):
 			h.logger.Warn("job create insufficient resources",
@@ -56,7 +56,7 @@ func (h *JobHandler) Create(c *gin.Context) {
 			h.logger.Error("job create failed", "event", "job_create_failed", "worker_id", req.WorkerID, "error", err)
 			c.JSON(http.StatusInternalServerError, protocol.CreateJobResponse{
 				Status:        protocol.CreateJobStatusFailed,
-				RequiredSlots: req.SegmentCount,
+				RequiredSlots: requestedTaskCount(req),
 			})
 		}
 		return
@@ -96,4 +96,11 @@ func (h *JobHandler) Result(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func requestedTaskCount(req protocol.CreateJobRequest) int {
+	if len(req.Tasks) > 0 {
+		return len(req.Tasks)
+	}
+	return req.SegmentCount
 }

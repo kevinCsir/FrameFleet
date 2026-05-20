@@ -102,6 +102,7 @@ func (h *WorkerHandler) Heartbeat(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, protocol.HeartbeatWorkerResponse{
-		Status: protocol.HeartbeatWorkerStatusSuccess,
+		Status:             protocol.HeartbeatWorkerStatusSuccess,
+		GlobalBackpressure: h.registry.BackpressureStatus(),
 	})
 }

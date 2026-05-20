@@ -54,22 +54,24 @@ type Job struct {
 }
 
 type Task struct {
-	ID                string
-	JobID             string
-	Type              protocol.TaskType
-	SegmentIndex      int
-	AssignedWorkerID  string
-	Status            TaskStatus
-	RequiredDiskBytes int64
-	Checksum          string
-	FrameCount        int
-	DurationMS        int64
-	OutputSizeBytes   int64
-	FailureReason     string
-	Retryable         bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	AcceptedAt        *time.Time
-	CompletedAt       *time.Time
-	FailedAt          *time.Time
+	ID                    string
+	JobID                 string
+	Type                  protocol.TaskType
+	SegmentIndex          int
+	ProcessingMode        protocol.TaskProcessingMode
+	AssignedWorkerID      string
+	AssignedWorkerAddress string
+	Status                TaskStatus
+	RequiredDiskBytes     int64
+	Checksum              string
+	FrameCount            int
+	DurationMS            int64
+	OutputSizeBytes       int64
+	FailureReason         string
+	Retryable             bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	AcceptedAt            *time.Time
+	CompletedAt           *time.Time
+	FailedAt              *time.Time
 }

@@ -2,7 +2,6 @@
   "version": 1,
   "request_id": "req_split_1",
   "type": "completed",
-  "job_id": "job_123",
   "segments": [
     {
       "segment_index": 0,
