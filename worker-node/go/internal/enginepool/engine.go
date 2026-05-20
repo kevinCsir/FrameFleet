@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 
 	"framefleet/worker-node/go/internal/engineprotocol"
@@ -40,7 +42,12 @@ func newEngine(id int, cfg Config, logger *slog.Logger, makeCmd commandFactory) 
 }
 
 func defaultCommandFactory(ctx context.Context, cfg Config, id int) *exec.Cmd {
-	return exec.CommandContext(ctx, cfg.BinaryPath)
+	cmd := exec.CommandContext(ctx, cfg.BinaryPath)
+	cmd.Env = append(os.Environ(),
+		"FRAMEFLEET_CANNY_LOW_THRESHOLD="+strconv.Itoa(cfg.CannyLowThreshold),
+		"FRAMEFLEET_CANNY_HIGH_THRESHOLD="+strconv.Itoa(cfg.CannyHighThreshold),
+	)
+	return cmd
 }
 
 func (e *Engine) Start(ctx context.Context) error {

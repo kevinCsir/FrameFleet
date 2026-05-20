@@ -222,9 +222,12 @@ func (r *Runner) splitVideo(ctx context.Context, task sourceVideoTask) (splitVid
 	defer lease.Release()
 
 	jobKey := safeJobKey(task.VideoName)
+	splitPolicy := r.splitPolicy()
 	splitResp, err := lease.Call(ctx, engineprotocol.Request{
-		Operation:    engineprotocol.OpSplitVideo,
-		SegmentCount: r.segmentCount(),
+		Operation:               engineprotocol.OpSplitVideo,
+		TargetSegmentSizeBytes:  splitPolicy.TargetSegmentSizeBytes,
+		TargetSegmentDurationMS: splitPolicy.TargetSegmentDurationMS,
+		MaxSegments:             splitPolicy.MaxSegments,
 		Input: &engineprotocol.FileRef{
 			Mode: engineprotocol.DataModeFile,
 			Path: task.Path,
@@ -402,12 +405,12 @@ func (r *Runner) processInternalSegment(ctx context.Context, lease *enginepool.L
 	}
 }
 
-func (r *Runner) segmentCount() int {
+func (r *Runner) splitPolicy() protocol.SplitPolicy {
 	policy := r.state.SplitPolicy()
-	if policy.MaxSegments > 0 {
-		return policy.MaxSegments
+	if policy.MaxSegments <= 0 {
+		policy.MaxSegments = 3
 	}
-	return 3
+	return policy
 }
 
 func segmentByIndex(segments []engineprotocol.SegmentFile, index int) (engineprotocol.SegmentFile, bool) {

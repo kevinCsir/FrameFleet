@@ -11,6 +11,7 @@ import (
 
 	"framefleet/pkg/protocol"
 	"framefleet/worker-node/go/internal/config"
+	"framefleet/worker-node/go/internal/diskusage"
 	"framefleet/worker-node/go/internal/enginepool"
 	"framefleet/worker-node/go/internal/entryclient"
 	"framefleet/worker-node/go/internal/heartbeat"
@@ -55,18 +56,22 @@ func New(cfg config.Config) (*Agent, error) {
 		}
 	}
 
+	diskObserver := diskusage.NewObserver(spoolManager.ResultsDir())
 	state := workerstate.New(workerstate.Config{
 		TotalSlots:     cfg.TotalSlots,
 		DiskTotalBytes: cfg.DiskTotalBytes,
 		DiskFreeBytes:  cfg.DiskFreeBytes,
+		DiskObserver:   diskObserver,
 	})
 	entry := entryclient.New(cfg.EntryBaseURL)
 	peers := peerclient.New()
 
 	pool, err := enginepool.New(enginepool.Config{
-		Slots:      cfg.TotalSlots,
-		BinaryPath: cfg.EngineBinaryPath,
-		DataDir:    cfg.DataDir,
+		Slots:              cfg.TotalSlots,
+		BinaryPath:         cfg.EngineBinaryPath,
+		DataDir:            cfg.DataDir,
+		CannyLowThreshold:  cfg.CannyLowThreshold,
+		CannyHighThreshold: cfg.CannyHighThreshold,
 	}, logger)
 	if err != nil {
 		_ = closeLog()
@@ -99,12 +104,13 @@ func (a *Agent) Run() error {
 		return err
 	}
 
+	disk := a.state.DiskUsage()
 	registerResp, err := a.entry.RegisterWorker(ctx, protocol.RegisterWorkerRequest{
 		Address:        a.cfg.AdvertisedAddress,
 		TotalSlots:     a.cfg.TotalSlots,
 		SupportedTasks: []protocol.TaskType{protocol.TaskTypeProcessSegment, protocol.TaskTypeAssembleGIF},
-		DiskTotalBytes: a.cfg.DiskTotalBytes,
-		DiskFreeBytes:  a.cfg.DiskFreeBytes,
+		DiskTotalBytes: disk.TotalBytes,
+		DiskFreeBytes:  disk.FreeBytes,
 	})
 	if err != nil {
 		return err

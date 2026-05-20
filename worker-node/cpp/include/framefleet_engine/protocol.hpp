@@ -22,7 +22,9 @@ struct Request {
     int version = 0;
     std::string request_id;
     std::string op;
-    int segment_count = 0;
+    std::int64_t target_segment_size_bytes = 0;
+    std::int64_t target_segment_duration_ms = 0;
+    int max_segments = 0;
     std::optional<FileRef> input;
     std::vector<FileRef> inputs;
     std::optional<FileRef> output;

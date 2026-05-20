@@ -75,8 +75,11 @@ void validate_request(const Request& request) {
         return;
     }
     if (request.op == "split_video") {
-        if (!request.input || request.output_dir.empty() || request.segment_count <= 0) {
-            throw std::runtime_error("split_video requires input, output_dir, and positive segment_count");
+        const auto has_split_policy = request.target_segment_size_bytes > 0 ||
+                                      request.target_segment_duration_ms > 0 ||
+                                      request.max_segments > 0;
+        if (!request.input || request.output_dir.empty() || !has_split_policy) {
+            throw std::runtime_error("split_video requires input, output_dir, and a positive split policy");
         }
         return;
     }
@@ -123,7 +126,9 @@ Request parse_request_line(const std::string& line) {
     request.version = json.at("version").get<int>();
     request.request_id = required_string(json, "request_id");
     request.op = required_string(json, "op");
-    request.segment_count = optional_int(json, "segment_count", 0);
+    request.target_segment_size_bytes = optional_int64(json, "target_segment_size_bytes", 0);
+    request.target_segment_duration_ms = optional_int64(json, "target_segment_duration_ms", 0);
+    request.max_segments = optional_int(json, "max_segments", 0);
     if (json.contains("input")) {
         request.input = parse_file_ref(json.at("input"), "input");
     }

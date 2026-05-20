@@ -41,7 +41,7 @@ simulates video work with file operations:
 
 - `ping`: returns `completed`
 - `process_internal_simple`: copies input file to output file
-- `split_video`: copies input file into one output file per requested segment
+- `split_video`: copies input file into one output file per `max_segments` value
 - `process_segment`: copies segment input file to artifact output file
 - `assemble_gif`: concatenates artifact inputs into the result output file
 

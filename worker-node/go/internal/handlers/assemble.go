@@ -26,9 +26,40 @@ func (h *Handler) StartAssembleGIF(c *gin.Context) {
 		return
 	}
 
+	requiredDiskBytes := estimateAssembleDiskBytes(req.Video.TotalSizeBytes, req.Segments)
+	disk := h.state.DiskUsage()
+	if disk.FreeBytes < requiredDiskBytes {
+		c.JSON(http.StatusOK, protocol.StartAssembleGIFResponse{
+			Status:        protocol.StartAssembleGIFStatusInsufficientStorage,
+			DiskFreeBytes: disk.FreeBytes,
+		})
+		return
+	}
+
 	go h.runAssembleGIF(req, workerID)
 
 	c.JSON(http.StatusOK, protocol.StartAssembleGIFResponse{Status: protocol.StartAssembleGIFStatusSuccess})
+}
+
+func estimateAssembleDiskBytes(totalSizeBytes int64, segments []protocol.AssembleSegmentRef) int64 {
+	totalOutputSize := int64(0)
+	allOutputSizesKnown := len(segments) > 0
+	for _, segment := range segments {
+		if segment.OutputSizeBytes <= 0 {
+			allOutputSizesKnown = false
+			break
+		}
+		totalOutputSize += segment.OutputSizeBytes
+	}
+
+	base := totalSizeBytes
+	if allOutputSizesKnown && totalOutputSize > 0 {
+		base = totalOutputSize * 2
+	}
+	if base < 1 {
+		base = 1
+	}
+	return base * 12 / 10
 }
 
 func (h *Handler) runAssembleGIF(req protocol.StartAssembleGIFRequest, workerID string) {

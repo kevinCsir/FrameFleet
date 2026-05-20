@@ -15,9 +15,11 @@ import (
 var ErrNoIdleEngine = errors.New("no idle engine available")
 
 type Config struct {
-	Slots      int
-	BinaryPath string
-	DataDir    string
+	Slots              int
+	BinaryPath         string
+	DataDir            string
+	CannyLowThreshold  int
+	CannyHighThreshold int
 }
 
 type Pool struct {

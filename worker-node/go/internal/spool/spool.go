@@ -27,6 +27,10 @@ func (m *Manager) Dirs() []string {
 	}
 }
 
+func (m *Manager) ResultsDir() string {
+	return filepath.Join(m.root, "results")
+}
+
 func (m *Manager) UploadPath(taskID string) string {
 	return filepath.Join(m.root, "uploads", taskID+".input")
 }

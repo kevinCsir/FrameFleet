@@ -46,3 +46,7 @@ data/
 artifacts/
 uploads/
 results/
+
+# FrameFleet generated test media
+worker-node/cpp/testdata/videos/*
+!worker-node/cpp/testdata/videos/canny_source_short.mp4

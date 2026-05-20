@@ -39,8 +39,8 @@ func main() {
 		CheckInterval: durationFromEnvSeconds("WORKER_HEARTBEAT_CHECK_INTERVAL_SECONDS", 10*time.Second),
 	}, protocol.SplitPolicy{
 		TargetSegmentSizeBytes:  int64FromEnv("SPLIT_TARGET_SEGMENT_SIZE_BYTES", 0),
-		TargetSegmentDurationMS: int64FromEnv("SPLIT_TARGET_SEGMENT_DURATION_MS", 10_000),
-		MaxSegments:             intFromEnv("SPLIT_MAX_SEGMENTS", 0),
+		TargetSegmentDurationMS: int64FromEnv("SPLIT_TARGET_SEGMENT_DURATION_MS", 3_000),
+		MaxSegments:             intFromEnv("SPLIT_MAX_SEGMENTS", 8),
 	}, appLogger)
 
 	appLogger.Info("entry server starting",

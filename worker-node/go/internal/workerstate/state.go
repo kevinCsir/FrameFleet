@@ -4,12 +4,14 @@ import (
 	"sync"
 
 	"framefleet/pkg/protocol"
+	"framefleet/worker-node/go/internal/diskusage"
 )
 
 type Config struct {
 	TotalSlots     int
 	DiskTotalBytes int64
 	DiskFreeBytes  int64
+	DiskObserver   *diskusage.Observer
 }
 
 type State struct {
@@ -87,14 +89,33 @@ func (s *State) HeartbeatRequest() protocol.HeartbeatWorkerRequest {
 		}
 	}
 
+	diskTotalBytes, diskFreeBytes := s.diskUsageLocked()
+
 	return protocol.HeartbeatWorkerRequest{
 		WorkerID:              s.workerID,
 		TotalSlots:            s.cfg.TotalSlots,
 		RunningProcessSegment: runningProcessSegment,
 		RunningAssembleGIF:    runningAssembleGIF,
 		RunningTasks:          runningTasks,
-		DiskTotalBytes:        s.cfg.DiskTotalBytes,
-		DiskFreeBytes:         s.cfg.DiskFreeBytes,
+		DiskTotalBytes:        diskTotalBytes,
+		DiskFreeBytes:         diskFreeBytes,
 		Metrics:               map[protocol.TaskType]protocol.TaskRunMetric{},
 	}
+}
+
+func (s *State) DiskUsage() diskusage.Usage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	totalBytes, freeBytes := s.diskUsageLocked()
+	return diskusage.Usage{TotalBytes: totalBytes, FreeBytes: freeBytes}
+}
+
+func (s *State) diskUsageLocked() (int64, int64) {
+	if s.cfg.DiskObserver != nil {
+		if usage, err := s.cfg.DiskObserver.Usage(); err == nil {
+			return usage.TotalBytes, usage.FreeBytes
+		}
+	}
+	return s.cfg.DiskTotalBytes, s.cfg.DiskFreeBytes
 }
