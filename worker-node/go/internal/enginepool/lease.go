@@ -27,6 +27,9 @@ func (l *Lease) Call(ctx context.Context, req engineprotocol.Request) (enginepro
 	if released {
 		return engineprotocol.Response{}, ErrLeaseReleased
 	}
+	req = prepareRequest(req)
+	l.pool.markExecuting(l.engine, req)
+	defer l.pool.markLeased(l.engine)
 	return l.engine.Call(ctx, req)
 }
 

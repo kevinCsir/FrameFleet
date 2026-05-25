@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"framefleet/worker-node/go/internal/engineprotocol"
 )
@@ -31,7 +32,31 @@ type Pool struct {
 	started bool
 	engines []*Engine
 	idle    chan *Engine
+	slots   map[int]*slotState
 }
+
+type SlotSnapshot struct {
+	SlotID      int    `json:"slot_id"`
+	State       string `json:"state"`
+	Operation   string `json:"op,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+	HeldMS      int64  `json:"held_ms,omitempty"`
+	ExecutingMS int64  `json:"executing_ms,omitempty"`
+}
+
+type slotState struct {
+	state       string
+	operation   string
+	requestID   string
+	leasedAt    time.Time
+	executingAt time.Time
+}
+
+const (
+	slotStateIdle      = "idle"
+	slotStateLeased    = "leased"
+	slotStateExecuting = "executing"
+)
 
 func New(cfg Config, logger *slog.Logger) (*Pool, error) {
 	if cfg.Slots <= 0 {
@@ -74,6 +99,7 @@ func (p *Pool) Start(ctx context.Context) error {
 
 	p.engines = make([]*Engine, 0, p.cfg.Slots)
 	p.idle = make(chan *Engine, p.cfg.Slots)
+	p.slots = make(map[int]*slotState, p.cfg.Slots)
 	for id := 0; id < p.cfg.Slots; id++ {
 		engine := newEngine(id, p.cfg, p.logger, p.makeCmd)
 		if err := engine.Start(ctx); err != nil {
@@ -81,6 +107,7 @@ func (p *Pool) Start(ctx context.Context) error {
 			return err
 		}
 		p.engines = append(p.engines, engine)
+		p.slots[id] = &slotState{state: slotStateIdle}
 		p.idle <- engine
 	}
 
@@ -108,6 +135,7 @@ func (p *Pool) Stop(ctx context.Context) error {
 	p.started = false
 	p.engines = nil
 	p.idle = nil
+	p.slots = nil
 	return err
 }
 
@@ -115,11 +143,42 @@ func (p *Pool) Slots() int {
 	return p.cfg.Slots
 }
 
+func (p *Pool) Snapshot() []SlotSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	snapshots := make([]SlotSnapshot, 0, p.cfg.Slots)
+	now := time.Now()
+	for id := 0; id < p.cfg.Slots; id++ {
+		state := p.slots[id]
+		if state == nil {
+			snapshots = append(snapshots, SlotSnapshot{SlotID: id, State: slotStateIdle})
+			continue
+		}
+
+		snapshot := SlotSnapshot{
+			SlotID:    id,
+			State:     state.state,
+			Operation: state.operation,
+			RequestID: state.requestID,
+		}
+		if !state.leasedAt.IsZero() {
+			snapshot.HeldMS = now.Sub(state.leasedAt).Milliseconds()
+		}
+		if !state.executingAt.IsZero() {
+			snapshot.ExecutingMS = now.Sub(state.executingAt).Milliseconds()
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots
+}
+
 func (p *Pool) Acquire(ctx context.Context) (*Lease, error) {
 	engine, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
+	p.markLeased(engine)
 	return &Lease{pool: p, engine: engine}, nil
 }
 
@@ -128,6 +187,7 @@ func (p *Pool) TryAcquire() (*Lease, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.markLeased(engine)
 	return &Lease{pool: p, engine: engine}, nil
 }
 
@@ -137,6 +197,9 @@ func (p *Pool) Call(ctx context.Context, req engineprotocol.Request) (engineprot
 		return engineprotocol.Response{}, err
 	}
 	defer p.release(engine)
+	req = prepareRequest(req)
+	p.markExecuting(engine, req)
+	defer p.markLeased(engine)
 
 	return engine.Call(ctx, req)
 }
@@ -147,6 +210,9 @@ func (p *Pool) TryCall(ctx context.Context, req engineprotocol.Request) (enginep
 		return engineprotocol.Response{}, err
 	}
 	defer p.release(engine)
+	req = prepareRequest(req)
+	p.markExecuting(engine, req)
+	defer p.markLeased(engine)
 
 	return engine.Call(ctx, req)
 }
@@ -191,10 +257,58 @@ func (p *Pool) release(engine *Engine) {
 		p.mu.Unlock()
 		return
 	}
+	p.markIdleLocked(engine)
 	idle := p.idle
 	p.mu.Unlock()
 
 	idle <- engine
+}
+
+func (p *Pool) markLeased(engine *Engine) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state := p.ensureSlotStateLocked(engine.id)
+	state.state = slotStateLeased
+	state.operation = ""
+	state.requestID = ""
+	state.leasedAt = time.Now()
+	state.executingAt = time.Time{}
+}
+
+func (p *Pool) markExecuting(engine *Engine, req engineprotocol.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state := p.ensureSlotStateLocked(engine.id)
+	if state.leasedAt.IsZero() {
+		state.leasedAt = time.Now()
+	}
+	state.state = slotStateExecuting
+	state.operation = string(req.Operation)
+	state.requestID = req.RequestID
+	state.executingAt = time.Now()
+}
+
+func (p *Pool) markIdleLocked(engine *Engine) {
+	state := p.ensureSlotStateLocked(engine.id)
+	state.state = slotStateIdle
+	state.operation = ""
+	state.requestID = ""
+	state.leasedAt = time.Time{}
+	state.executingAt = time.Time{}
+}
+
+func (p *Pool) ensureSlotStateLocked(id int) *slotState {
+	if p.slots == nil {
+		p.slots = make(map[int]*slotState, p.cfg.Slots)
+	}
+	state := p.slots[id]
+	if state == nil {
+		state = &slotState{state: slotStateIdle}
+		p.slots[id] = state
+	}
+	return state
 }
 
 func (p *Pool) stopStartedEnginesLocked(ctx context.Context) error {
@@ -213,4 +327,14 @@ func nextRequestID() string {
 		return "req_fallback"
 	}
 	return "req_" + hex.EncodeToString(raw[:])
+}
+
+func prepareRequest(req engineprotocol.Request) engineprotocol.Request {
+	if req.Version == 0 {
+		req.Version = engineprotocol.Version
+	}
+	if req.RequestID == "" {
+		req.RequestID = nextRequestID()
+	}
+	return req
 }

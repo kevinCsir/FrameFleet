@@ -31,6 +31,7 @@ type Runner struct {
 	mu           sync.Mutex
 	pendingSplit map[string]sourceVideoTask
 	done         map[string]struct{}
+	active       sourceActiveState
 }
 
 type Config struct {
@@ -55,6 +56,35 @@ type internalSegmentWork struct {
 	segment engineprotocol.SegmentFile
 	lease   *enginepool.Lease
 }
+
+type SourceSnapshot struct {
+	PendingSplit       int    `json:"pending_split"`
+	Done               int    `json:"done"`
+	ActiveVideoName    string `json:"active_video_name,omitempty"`
+	ActivePath         string `json:"active_path,omitempty"`
+	ActivePhase        string `json:"active_phase,omitempty"`
+	ActiveSegmentIndex int    `json:"active_segment_index,omitempty"`
+	HasActiveSegment   bool   `json:"has_active_segment,omitempty"`
+}
+
+type sourceActiveState struct {
+	videoName       string
+	path            string
+	phase           string
+	segmentIndex    int
+	hasSegmentIndex bool
+}
+
+const (
+	sourcePhaseIdle                   = "idle"
+	sourcePhaseSplitWaitSlot          = "split_wait_slot"
+	sourcePhaseSplitRunning           = "split_running"
+	sourcePhaseCreateJob              = "create_job"
+	sourcePhaseDispatchSegments       = "dispatch_segments"
+	sourcePhaseProcessInternalSegment = "process_internal_segment"
+	sourcePhaseUploadExternalSegment  = "upload_external_segment"
+	sourcePhaseDone                   = "done"
+)
 
 var createJobRetryDelays = []time.Duration{
 	1 * time.Second,
@@ -92,6 +122,21 @@ func (r *Runner) Start(ctx context.Context) {
 
 	go r.scanLoop(ctx)
 	go r.processLoop(ctx)
+}
+
+func (r *Runner) Snapshot() SourceSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return SourceSnapshot{
+		PendingSplit:       len(r.pendingSplit),
+		Done:               len(r.done),
+		ActiveVideoName:    r.active.videoName,
+		ActivePath:         r.active.path,
+		ActivePhase:        r.active.phase,
+		ActiveSegmentIndex: r.active.segmentIndex,
+		HasActiveSegment:   r.active.hasSegmentIndex,
+	}
 }
 
 func (r *Runner) scanLoop(ctx context.Context) {
@@ -171,6 +216,8 @@ func (r *Runner) processOne(ctx context.Context) {
 	}
 
 	if task, ok := r.popPendingSplit(); ok {
+		r.setActive(task.VideoName, task.Path, sourcePhaseSplitWaitSlot, 0, false)
+		defer r.clearActive()
 		splitTask, split := r.splitVideo(ctx, task)
 		if split {
 			if r.registerAndDispatch(ctx, splitTask) {
@@ -213,7 +260,28 @@ func (r *Runner) markDone(path string) {
 	r.done[path] = struct{}{}
 }
 
+func (r *Runner) setActive(videoName string, path string, phase string, segmentIndex int, hasSegmentIndex bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.active = sourceActiveState{
+		videoName:       videoName,
+		path:            path,
+		phase:           phase,
+		segmentIndex:    segmentIndex,
+		hasSegmentIndex: hasSegmentIndex,
+	}
+}
+
+func (r *Runner) clearActive() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.active = sourceActiveState{phase: sourcePhaseIdle}
+}
+
 func (r *Runner) splitVideo(ctx context.Context, task sourceVideoTask) (splitVideoTask, bool) {
+	r.setActive(task.VideoName, task.Path, sourcePhaseSplitWaitSlot, 0, false)
 	lease, err := r.engines.Acquire(ctx)
 	if err != nil {
 		r.logger.Warn("source split slot acquire failed", "event", "source_split_slot_acquire_failed", "path", task.Path, "error", err)
@@ -221,6 +289,7 @@ func (r *Runner) splitVideo(ctx context.Context, task sourceVideoTask) (splitVid
 	}
 	defer lease.Release()
 
+	r.setActive(task.VideoName, task.Path, sourcePhaseSplitRunning, 0, false)
 	jobKey := safeJobKey(task.VideoName)
 	splitPolicy := r.splitPolicy()
 	splitResp, err := lease.Call(ctx, engineprotocol.Request{
@@ -295,6 +364,7 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 		TotalSizeBytes: task.TotalSizeBytes,
 		Tasks:          jobTasks,
 	}
+	r.setActive(task.VideoName, task.Path, sourcePhaseCreateJob, 0, false)
 	jobResp, err := r.createJobWithRetry(ctx, task, jobReq)
 	if err != nil {
 		r.logger.Warn("source job abandoned after create retries",
@@ -307,6 +377,7 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 		return false
 	}
 
+	r.setActive(task.VideoName, task.Path, sourcePhaseDispatchSegments, 0, false)
 	for _, assignment := range jobResp.Assignments {
 		switch assignment.Mode {
 		case protocol.TaskProcessingModeInternal:
@@ -315,6 +386,7 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 				r.logger.Warn("internal assignment missing held slot", "event", "source_internal_assignment_missing_slot", "segment_index", assignment.SegmentIndex)
 				return true
 			}
+			r.setActive(task.VideoName, task.Path, sourcePhaseProcessInternalSegment, assignment.SegmentIndex, true)
 			r.processInternalSegment(ctx, work.lease, workerID, assignment, work.segment)
 			work.lease.Release()
 			delete(internalWork, assignment.SegmentIndex)
@@ -328,6 +400,7 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 				r.logger.Warn("external assignment missing address", "event", "source_external_assignment_missing_address", "task_id", assignment.TaskID)
 				return true
 			}
+			r.setActive(task.VideoName, task.Path, sourcePhaseUploadExternalSegment, assignment.SegmentIndex, true)
 			if err := r.peers.UploadSegment(ctx, assignment.Address, assignment.TaskID, segment.Path); err != nil {
 				r.logger.Warn("upload segment to worker failed", "event", "source_external_segment_upload_failed", "task_id", assignment.TaskID, "address", assignment.Address, "error", err)
 				return true
@@ -339,6 +412,7 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 	}
 
 	releaseInternalWork = false
+	r.setActive(task.VideoName, task.Path, sourcePhaseDone, 0, false)
 	return true
 }
 

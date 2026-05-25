@@ -78,6 +78,11 @@ func New(cfg config.Config) (*Agent, error) {
 		return nil, err
 	}
 
+	sourceRunner := sourceworker.New(sourceworker.Config{
+		InputDir: cfg.InputDir,
+		Interval: cfg.SourceScanInterval,
+	}, logger, entry, peers, pool, spoolManager, state)
+
 	return &Agent{
 		cfg:        cfg,
 		logger:     logger,
@@ -86,12 +91,26 @@ func New(cfg config.Config) (*Agent, error) {
 		monitor:    taskmonitor.New(cfg.HeartbeatInterval, logger),
 		entry:      entry,
 		state:      state,
-		heartbeat:  heartbeat.New(entry, state, cfg.HeartbeatInterval, logger),
-		peers:      peers,
-		source: sourceworker.New(sourceworker.Config{
-			InputDir: cfg.InputDir,
-			Interval: cfg.SourceScanInterval,
-		}, logger, entry, peers, pool, spoolManager, state),
+		heartbeat: heartbeat.New(entry, state, cfg.HeartbeatInterval, logger, func() heartbeat.RuntimeSnapshot {
+			slots := pool.Snapshot()
+			idle := 0
+			busy := 0
+			for _, slot := range slots {
+				if slot.State == "idle" {
+					idle++
+				} else {
+					busy++
+				}
+			}
+			return heartbeat.RuntimeSnapshot{
+				Source:    sourceRunner.Snapshot(),
+				Slots:     slots,
+				SlotsIdle: idle,
+				SlotsBusy: busy,
+			}
+		}),
+		peers:    peers,
+		source:   sourceRunner,
 		closeLog: closeLog,
 	}, nil
 }

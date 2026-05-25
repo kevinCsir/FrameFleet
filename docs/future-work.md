@@ -239,6 +239,40 @@ Deferred implementation:
   `POST /jobs/result`
 - Track local running tasks and include task IDs in heartbeat.
 
+## Worker Runtime Observability
+
+Current implementation:
+
+- Worker heartbeat reports task counts and running task IDs to Entry.
+- WorkerGo logs a local runtime snapshot on each heartbeat cycle. This snapshot
+  is intentionally local-only and is not part of the public HTTP heartbeat
+  protocol. It includes source queue counts, source active phase, engine slot
+  state, slot operation, request ID, and slot hold/execution durations.
+
+Deferred improvement:
+
+- Define a unified WorkerEvent object for structured worker runtime events.
+- Keep stable correlation fields across modules:
+  - `worker_id`
+  - `worker_address`
+  - `video_name`
+  - `job_id`
+  - `task_id`
+  - `task_type`
+  - `segment_index`
+  - `slot_id`
+  - `engine_op`
+  - `request_id`
+  - `phase`
+  - `duration_ms`
+- Use this event object consistently for source scanning, split, job creation,
+  segment dispatch, segment processing, artifact serving, assemble work, slot
+  acquire/release, engine calls, and result notification.
+- Consider adding a worker-local debug endpoint such as `GET /debug/runtime`
+  after the log shape stabilizes.
+- Only promote selected summary fields into the public heartbeat protocol if
+  Entry needs them for scheduling or operator visibility.
+
 
 ## Source Worker Scheduling Strategy
 
