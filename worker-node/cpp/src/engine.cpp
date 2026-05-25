@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <algorithm>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -294,19 +295,26 @@ double probe_duration_seconds(const std::string& input_path) {
     throw std::runtime_error("ffprobe returned invalid duration for input: " + input_path);
 }
 
-int split_count(const Request& request, double duration_seconds) {
-    const int max_segments = request.max_segments > 0 ? request.max_segments : 1;
-    if (request.target_segment_duration_ms <= 0) {
-        return max_segments;
+int split_count(const Request& request, double duration_seconds, std::int64_t input_size_bytes) {
+    int count = 1;
+
+    if (request.target_segment_duration_ms > 0) {
+        const double target_seconds = static_cast<double>(request.target_segment_duration_ms) / 1000.0;
+        if (target_seconds > 0) {
+            count = std::max(count, static_cast<int>(std::ceil(duration_seconds / target_seconds)));
+        }
     }
 
-    const double target_seconds = static_cast<double>(request.target_segment_duration_ms) / 1000.0;
-    if (target_seconds <= 0) {
-        return max_segments;
+    if (request.target_segment_size_bytes > 0 && input_size_bytes > 0) {
+        const auto by_size = static_cast<int>(std::ceil(
+            static_cast<double>(input_size_bytes) / static_cast<double>(request.target_segment_size_bytes)));
+        count = std::max(count, by_size);
     }
 
-    const int by_duration = std::max(1, static_cast<int>(std::ceil(duration_seconds / target_seconds)));
-    return std::min(max_segments, by_duration);
+    if (request.max_segments > 0) {
+        count = std::min(count, request.max_segments);
+    }
+    return std::max(1, count);
 }
 
 void split_segment_with_ffmpeg(const Request& request, int index, double start_seconds, double duration_seconds, const std::string& output_path) {
@@ -328,6 +336,76 @@ void split_segment_with_ffmpeg(const Request& request, int index, double start_s
         "-avoid_negative_ts", "make_zero",
         output_path,
     });
+}
+
+std::string segment_pattern(const std::string& output_dir) {
+    return (std::filesystem::path(output_dir) / "segment_%d.mp4").string();
+}
+
+void split_video_with_ffmpeg_segment_muxer(const Request& request, double segment_time_seconds) {
+    const auto ffmpeg = env_or_default("FRAMEFLEET_FFMPEG_PATH", "ffmpeg");
+    run_process({
+        ffmpeg,
+        "-hide_banner",
+        "-v", "error",
+        "-nostdin",
+        "-y",
+        "-threads", "1",
+        "-filter_threads", "1",
+        "-filter_complex_threads", "1",
+        "-i", request.input->path,
+        "-map", "0",
+        "-c", "copy",
+        "-f", "segment",
+        "-segment_time", std::to_string(segment_time_seconds),
+        "-reset_timestamps", "1",
+        "-avoid_negative_ts", "make_zero",
+        segment_pattern(request.output_dir),
+    });
+}
+
+std::vector<SegmentFile> collect_split_segments(const std::string& output_dir) {
+    std::vector<SegmentFile> segments;
+    for (const auto& entry : std::filesystem::directory_iterator(output_dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto path = entry.path();
+        const auto name = path.filename().string();
+        const std::string prefix = "segment_";
+        const std::string suffix = ".mp4";
+        if (name.rfind(prefix, 0) != 0 || name.size() <= prefix.size() + suffix.size()) {
+            continue;
+        }
+        if (name.substr(name.size() - suffix.size()) != suffix) {
+            continue;
+        }
+        const auto index_text = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        try {
+            std::size_t consumed = 0;
+            const auto index = std::stoi(index_text, &consumed);
+            if (consumed != index_text.size() || index < 0) {
+                continue;
+            }
+            segments.push_back(SegmentFile{
+                index,
+                path.string(),
+                name,
+                file_size_or_zero(path.string()),
+            });
+        } catch (const std::exception&) {
+        }
+    }
+
+    std::sort(segments.begin(), segments.end(), [](const SegmentFile& left, const SegmentFile& right) {
+        return left.segment_index < right.segment_index;
+    });
+    for (int index = 0; index < static_cast<int>(segments.size()); ++index) {
+        if (segments[index].segment_index != index) {
+            throw std::runtime_error("ffmpeg segment output has non-contiguous segment indexes");
+        }
+    }
+    return segments;
 }
 
 std::filesystem::path make_temp_dir(const std::string& prefix) {
@@ -470,14 +548,18 @@ Response handle_split_video(const Request& request) {
     if (env_enabled("FRAMEFLEET_ENGINE_FAKE_SPLIT")) {
         wait_for_fake_work();
         const auto input_size = file_size_or_zero(request.input->path);
-        const auto max_segments = request.max_segments > 0 ? request.max_segments : 2;
+        int fake_segments = request.max_segments > 0 ? request.max_segments : 1;
+        if (request.max_segments <= 0 && request.target_segment_size_bytes > 0 && input_size > 0) {
+            fake_segments = std::max(1, static_cast<int>(std::ceil(
+                static_cast<double>(input_size) / static_cast<double>(request.target_segment_size_bytes))));
+        }
 
         auto response = make_completed_response(request);
         std::int64_t offset = 0;
-        for (int index = 0; index < max_segments; ++index) {
+        for (int index = 0; index < fake_segments; ++index) {
             const auto name = "segment_" + std::to_string(index) + ".mp4";
             const auto path = (std::filesystem::path(request.output_dir) / name).string();
-            const auto remaining_segments = max_segments - index;
+            const auto remaining_segments = fake_segments - index;
             const auto remaining_bytes = input_size - offset;
             const auto length = remaining_segments > 0 ? (remaining_bytes + remaining_segments - 1) / remaining_segments : 0;
             copy_file_range(request.input->path, path, offset, length);
@@ -494,10 +576,18 @@ Response handle_split_video(const Request& request) {
     }
 
     const auto video_duration_seconds = probe_duration_seconds(request.input->path);
-    const auto count = split_count(request, video_duration_seconds);
+    const auto input_size_bytes = file_size_or_zero(request.input->path);
+    const auto count = split_count(request, video_duration_seconds, input_size_bytes);
     const auto segment_duration_seconds = video_duration_seconds / static_cast<double>(count);
 
     auto response = make_completed_response(request);
+    if (request.max_segments <= 0) {
+        split_video_with_ffmpeg_segment_muxer(request, segment_duration_seconds);
+        response.segments = collect_split_segments(request.output_dir);
+        response.duration_ms = elapsed_ms(start);
+        return response;
+    }
+
     for (int index = 0; index < count; ++index) {
         const auto name = "segment_" + std::to_string(index) + ".mp4";
         const auto path = (std::filesystem::path(request.output_dir) / name).string();

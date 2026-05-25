@@ -481,8 +481,8 @@ func (r *Runner) processInternalSegment(ctx context.Context, lease *enginepool.L
 
 func (r *Runner) splitPolicy() protocol.SplitPolicy {
 	policy := r.state.SplitPolicy()
-	if policy.MaxSegments <= 0 {
-		policy.MaxSegments = 3
+	if policy.TargetSegmentDurationMS <= 0 && policy.TargetSegmentSizeBytes <= 0 && policy.MaxSegments <= 0 {
+		policy.TargetSegmentDurationMS = 3000
 	}
 	return policy
 }

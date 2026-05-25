@@ -65,7 +65,8 @@ func TestResponseExamples(t *testing.T) {
 func TestOperationSpecificExamples(t *testing.T) {
 	var split Request
 	readExample(t, "split_video.request.json", &split)
-	if split.Operation != OpSplitVideo || split.Input == nil || split.OutputDir == "" || split.MaxSegments <= 0 {
+	hasSplitPolicy := split.TargetSegmentDurationMS > 0 || split.TargetSegmentSizeBytes > 0 || split.MaxSegments > 0
+	if split.Operation != OpSplitVideo || split.Input == nil || split.OutputDir == "" || !hasSplitPolicy {
 		t.Fatalf("invalid split_video request: %+v", split)
 	}
 

@@ -261,7 +261,7 @@ Response:
   "split_policy": {
     "target_segment_size_bytes": 0,
     "target_segment_duration_ms": 3000,
-    "max_segments": 8
+    "max_segments": 0
   }
 }
 ```
@@ -294,11 +294,14 @@ Default Entry split policy:
 ```text
 SPLIT_TARGET_SEGMENT_DURATION_MS=3000
 SPLIT_TARGET_SEGMENT_SIZE_BYTES=0
-SPLIT_MAX_SEGMENTS=8
+SPLIT_MAX_SEGMENTS=0
 ```
 
-`target_segment_size_bytes=0` means the size target is disabled. The current C++
-split implementation primarily uses duration and max segment count.
+`target_segment_size_bytes=0` means the size target is disabled.
+`max_segments=0` means segment count is not capped. When max is uncapped, C++
+uses one ffmpeg segment muxer process and estimates segment time from the active
+duration/size targets. When max is positive, C++ keeps the bounded per-segment
+ffmpeg path.
 
 ## Heartbeat And Backpressure
 
@@ -1042,7 +1045,7 @@ Request shape:
   "op": "split_video",
   "target_segment_size_bytes": 0,
   "target_segment_duration_ms": 3000,
-  "max_segments": 8,
+  "max_segments": 0,
   "input": {
     "mode": "file",
     "path": "/path/input.mp4",
@@ -1323,7 +1326,7 @@ WORKER_HEARTBEAT_TIMEOUT_SECONDS=30
 WORKER_HEARTBEAT_CHECK_INTERVAL_SECONDS=10
 SPLIT_TARGET_SEGMENT_DURATION_MS=3000
 SPLIT_TARGET_SEGMENT_SIZE_BYTES=0
-SPLIT_MAX_SEGMENTS=8
+SPLIT_MAX_SEGMENTS=0
 LOG_LEVEL=info
 LOG_OUTPUT=stdout|file|both|discard
 LOG_FILE=logs/entry-server.log

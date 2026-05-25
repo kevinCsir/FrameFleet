@@ -4,7 +4,7 @@
   "op": "split_video",
   "target_segment_size_bytes": 104857600,
   "target_segment_duration_ms": 10000,
-  "max_segments": 3,
+  "max_segments": 0,
   "input": {
     "mode": "file",
     "path": "worker-node/data/spool/videos/demo.mp4",

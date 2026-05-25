@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -92,6 +93,27 @@ func TestCppEngineFakeOperations(t *testing.T) {
 		assertFileEquals(t, filepath.Join(outputDir, "segment_0.mp4"), []byte("fake-v"))
 		assertFileEquals(t, filepath.Join(outputDir, "segment_1.mp4"), []byte("ideo-"))
 		assertFileEquals(t, filepath.Join(outputDir, "segment_2.mp4"), []byte("bytes"))
+	})
+
+	t.Run("split_video_uncapped_size_target", func(t *testing.T) {
+		outputDir := filepath.Join(tmp, "outgoing", "job_uncapped")
+		resp := callEngine(t, pool, engineprotocol.Request{
+			Operation:              engineprotocol.OpSplitVideo,
+			TargetSegmentSizeBytes: 5,
+			MaxSegments:            0,
+			Input:                  fileRef(inputPath, "input.mp4"),
+			OutputDir:              outputDir,
+		})
+		if resp.Type != engineprotocol.ResponseTypeCompleted {
+			t.Fatalf("type = %q, want completed", resp.Type)
+		}
+		if len(resp.Segments) != 4 {
+			t.Fatalf("segments = %d, want 4", len(resp.Segments))
+		}
+		assertFileEquals(t, filepath.Join(outputDir, "segment_0.mp4"), []byte("fake"))
+		assertFileEquals(t, filepath.Join(outputDir, "segment_1.mp4"), []byte("-vid"))
+		assertFileEquals(t, filepath.Join(outputDir, "segment_2.mp4"), []byte("eo-b"))
+		assertFileEquals(t, filepath.Join(outputDir, "segment_3.mp4"), []byte("ytes"))
 	})
 
 	t.Run("process_segment", func(t *testing.T) {
@@ -220,6 +242,80 @@ func TestCppEngineRealVideoPipeline(t *testing.T) {
 	assertGIFFile(t, resultPath)
 }
 
+func TestCppEngineUncappedSplitHonorsSizeTargetWithinTolerance(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skipf("ffmpeg not found: %v", err)
+	}
+
+	binaryPath := cppEngineBinaryPath(t)
+	if _, err := os.Stat(binaryPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			t.Skipf("C++ engine binary not found at %s; build it with: cmake -S worker-node/cpp -B worker-node/cpp/build && cmake --build worker-node/cpp/build", binaryPath)
+		}
+		t.Fatalf("stat C++ engine binary: %v", err)
+	}
+
+	tmp := t.TempDir()
+	videoPath := filepath.Join(tmp, "long.mp4")
+	generateSegmentableTestVideo(t, videoPath)
+
+	info, err := os.Stat(videoPath)
+	if err != nil {
+		t.Fatalf("stat generated video: %v", err)
+	}
+	targetSizeBytes := info.Size() / 4
+	if targetSizeBytes <= 0 {
+		t.Fatalf("generated video too small: %d", info.Size())
+	}
+
+	pool, err := New(Config{
+		Slots:      1,
+		BinaryPath: binaryPath,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New pool: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := pool.Start(ctx); err != nil {
+		t.Fatalf("Start pool: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		if err := pool.Stop(stopCtx); err != nil {
+			t.Fatalf("Stop pool: %v", err)
+		}
+	}()
+
+	splitDir := filepath.Join(tmp, "split")
+	splitResp := callEngineWithTimeout(t, pool, 10*time.Second, engineprotocol.Request{
+		Operation:              engineprotocol.OpSplitVideo,
+		TargetSegmentSizeBytes: targetSizeBytes,
+		MaxSegments:            0,
+		Input:                  fileRef(videoPath, filepath.Base(videoPath)),
+		OutputDir:              splitDir,
+	})
+	if splitResp.Type != engineprotocol.ResponseTypeCompleted {
+		t.Fatalf("split type = %q, reason = %q", splitResp.Type, splitResp.Reason)
+	}
+	if len(splitResp.Segments) < 4 {
+		t.Fatalf("split segments = %d, want at least 4", len(splitResp.Segments))
+	}
+
+	maxAllowedSize := targetSizeBytes * 2
+	for _, segment := range splitResp.Segments {
+		if segment.SizeBytes <= 0 {
+			t.Fatalf("segment %d has size %d", segment.SegmentIndex, segment.SizeBytes)
+		}
+		if segment.SizeBytes > maxAllowedSize {
+			t.Fatalf("segment %d size = %d, want <= %d (target %d)",
+				segment.SegmentIndex, segment.SizeBytes, maxAllowedSize, targetSizeBytes)
+		}
+	}
+}
+
 func cppEngineBinaryPath(t *testing.T) string {
 	t.Helper()
 
@@ -277,6 +373,33 @@ func writeFile(t *testing.T, path string, data []byte) {
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("write file %s: %v", path, err)
+	}
+}
+
+func generateSegmentableTestVideo(t *testing.T, outputPath string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		t.Fatalf("mkdir video parent: %v", err)
+	}
+	cmd := exec.Command(
+		"ffmpeg",
+		"-hide_banner",
+		"-v", "error",
+		"-nostdin",
+		"-y",
+		"-f", "lavfi",
+		"-i", "testsrc2=size=320x240:rate=15:duration=12",
+		"-c:v", "libx264",
+		"-g", "15",
+		"-keyint_min", "15",
+		"-sc_threshold", "0",
+		"-pix_fmt", "yuv420p",
+		outputPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generate test video failed: %v\n%s", err, output)
 	}
 }
 
