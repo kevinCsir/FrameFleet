@@ -10,15 +10,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
+var artifactDownloadIdleTimeout = 30 * time.Second
+
 type Client struct {
-	http *http.Client
+	http         *http.Client
+	transferHTTP *http.Client
 }
 
 func New() *Client {
-	return &Client{http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{
+		http:         &http.Client{Timeout: 30 * time.Second},
+		transferHTTP: &http.Client{},
+	}
 }
 
 func (c *Client) UploadSegment(ctx context.Context, workerAddress string, taskID string, inputPath string) error {
@@ -68,16 +75,34 @@ func (c *Client) UploadSegment(ctx context.Context, workerAddress string, taskID
 
 func (c *Client) DownloadArtifact(ctx context.Context, workerAddress string, taskID string, outputPath string) error {
 	url := "http://" + strings.TrimRight(workerAddress, "/") + "/artifacts/" + taskID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 
-	resp, err := c.http.Do(req)
+	client := c.transferHTTP
+	if client == nil {
+		client = &http.Client{}
+	}
+	var idleExpired atomic.Bool
+	idleTimer := time.AfterFunc(artifactDownloadIdleTimeout, func() {
+		idleExpired.Store(true)
+		cancel()
+	})
+	defer idleTimer.Stop()
+
+	resp, err := client.Do(req)
 	if err != nil {
+		if idleExpired.Load() {
+			return fmt.Errorf("artifact download idle timeout after %s", artifactDownloadIdleTimeout)
+		}
 		return err
 	}
 	defer resp.Body.Close()
+	resetIdleTimer(idleTimer, &idleExpired, artifactDownloadIdleTimeout)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("artifact download returned http status %d", resp.StatusCode)
@@ -91,10 +116,13 @@ func (c *Client) DownloadArtifact(ctx context.Context, workerAddress string, tas
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(file, resp.Body)
+	_, copyErr := copyWithIdleTimeout(file, resp.Body, idleTimer, &idleExpired, artifactDownloadIdleTimeout)
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmpPath)
+		if idleExpired.Load() {
+			return fmt.Errorf("artifact download idle timeout after %s", artifactDownloadIdleTimeout)
+		}
 		return copyErr
 	}
 	if closeErr != nil {
@@ -103,4 +131,37 @@ func (c *Client) DownloadArtifact(ctx context.Context, workerAddress string, tas
 	}
 
 	return os.Rename(tmpPath, outputPath)
+}
+
+func copyWithIdleTimeout(dst io.Writer, src io.Reader, timer *time.Timer, idleExpired *atomic.Bool, timeout time.Duration) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			resetIdleTimer(timer, idleExpired, timeout)
+			nw, ew := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				return written, ew
+			}
+			if nw != nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return written, nil
+			}
+			return written, er
+		}
+	}
+}
+
+func resetIdleTimer(timer *time.Timer, idleExpired *atomic.Bool, timeout time.Duration) {
+	idleExpired.Store(false)
+	timer.Stop()
+	timer.Reset(timeout)
 }

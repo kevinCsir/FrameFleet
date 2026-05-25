@@ -174,6 +174,17 @@ func (m *JobManager) createJobWithTaskPlan(req protocol.CreateJobRequest, source
 		m.tasks[task.ID] = task
 	}
 
+	internalTasks := 0
+	externalTasks := 0
+	for _, task := range tasks {
+		switch task.ProcessingMode {
+		case protocol.TaskProcessingModeInternal:
+			internalTasks++
+		case protocol.TaskProcessingModeExternal:
+			externalTasks++
+		}
+	}
+
 	m.logger.Info("job created",
 		"event", "job_created",
 		"job_id", jobID,
@@ -181,6 +192,8 @@ func (m *JobManager) createJobWithTaskPlan(req protocol.CreateJobRequest, source
 		"source_worker_address", sourceWorker.Address,
 		"video_name", req.VideoName,
 		"segment_count", len(taskPlan),
+		"internal_task_count", internalTasks,
+		"external_task_count", externalTasks,
 		"total_size_bytes", req.TotalSizeBytes,
 	)
 

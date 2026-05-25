@@ -317,6 +317,16 @@ func (r *Runner) splitVideo(ctx context.Context, task sourceVideoTask) (splitVid
 		return splitVideoTask{}, false
 	}
 
+	r.logger.Info("source video split completed",
+		"event", "source_video_split_completed",
+		"video_name", task.VideoName,
+		"path", task.Path,
+		"segment_count", len(splitResp.Segments),
+		"target_segment_duration_ms", splitPolicy.TargetSegmentDurationMS,
+		"target_segment_size_bytes", splitPolicy.TargetSegmentSizeBytes,
+		"max_segments", splitPolicy.MaxSegments,
+	)
+
 	return splitVideoTask{
 		Path:           task.Path,
 		VideoName:      task.VideoName,
@@ -334,20 +344,43 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 
 	internalWork := make(map[int]internalSegmentWork)
 	jobTasks := make([]protocol.CreateJobTaskRequest, 0, len(task.Segments))
+	internalCount := 0
+	externalCount := 0
 	for _, segment := range task.Segments {
 		lease, err := r.engines.TryAcquire()
 		mode := protocol.TaskProcessingModeExternal
 		if err == nil {
 			mode = protocol.TaskProcessingModeInternal
 			internalWork[segment.SegmentIndex] = internalSegmentWork{segment: segment, lease: lease}
+			internalCount++
 		} else if err != enginepool.ErrNoIdleEngine {
 			r.logger.Warn("source segment slot acquire failed", "event", "source_segment_slot_acquire_failed", "path", task.Path, "segment_index", segment.SegmentIndex, "error", err)
+			externalCount++
+		} else {
+			externalCount++
 		}
+		r.logger.Info("source segment dispatch planned",
+			"event", "source_segment_dispatch_planned",
+			"video_name", task.VideoName,
+			"path", task.Path,
+			"segment_index", segment.SegmentIndex,
+			"mode", string(mode),
+			"segment_path", segment.Path,
+			"local_slot_held", mode == protocol.TaskProcessingModeInternal,
+		)
 		jobTasks = append(jobTasks, protocol.CreateJobTaskRequest{
 			SegmentIndex: segment.SegmentIndex,
 			Mode:         mode,
 		})
 	}
+	r.logger.Info("source segment dispatch plan completed",
+		"event", "source_segment_dispatch_plan_completed",
+		"video_name", task.VideoName,
+		"path", task.Path,
+		"segment_count", len(task.Segments),
+		"internal_count", internalCount,
+		"external_count", externalCount,
+	)
 
 	releaseInternalWork := true
 	defer func() {
@@ -379,6 +412,17 @@ func (r *Runner) registerAndDispatch(ctx context.Context, task splitVideoTask) b
 
 	r.setActive(task.VideoName, task.Path, sourcePhaseDispatchSegments, 0, false)
 	for _, assignment := range jobResp.Assignments {
+		r.logger.Info("source segment assignment received",
+			"event", "source_segment_assignment_received",
+			"video_name", task.VideoName,
+			"path", task.Path,
+			"job_id", jobResp.JobID,
+			"task_id", assignment.TaskID,
+			"segment_index", assignment.SegmentIndex,
+			"mode", string(assignment.Mode),
+			"worker_id", assignment.WorkerID,
+			"address", assignment.Address,
+		)
 		switch assignment.Mode {
 		case protocol.TaskProcessingModeInternal:
 			work, ok := internalWork[assignment.SegmentIndex]
