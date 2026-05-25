@@ -150,6 +150,10 @@ deploy/worker-template/init-worker.sh \
 /home/ckw/framefleet-workers/worker-19001/stop.sh
 ```
 
+`run.sh` 会在启动前清理 `uploads`、`outgoing`、`artifacts`、`tmp` 这些中间
+spool 目录，但不会清理 `input/` 和 `data/spool/results/`。`stop.sh` 会按记录
+的进程组停止 WorkerGo、C++ engine slot 和 ffmpeg 子进程。
+
 模板默认让 WorkerGo 日志写到该实例的 `logs/worker-agent.log`，不在标准输出刷业务日志。模板详情见
 `deploy/worker-template/README.md`。
 

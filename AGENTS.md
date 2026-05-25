@@ -79,7 +79,9 @@ This file is the quick-start memo for agents working on FrameFleet.
   directories. The generated runtime keeps `worker.env`, `input/`, `data/`,
   `logs/`, and `run.sh`/`stop.sh`/`status.sh`/`logs.sh` together. Worker logs
   should go to the instance's `logs/worker-agent.log`, and agents should inspect
-  logs through files rather than relying on terminal stdout.
+  logs through files rather than relying on terminal stdout. Generated `run.sh`
+  cleans intermediate spool directories before start; generated `stop.sh` stops
+  the recorded process group so engine and ffmpeg children are covered.
 - B/E HTTP handlers should acknowledge quickly and do blocking slot work in
   background goroutines.
 - Slot subprocesses are single-request-at-a-time. Preserve request/response

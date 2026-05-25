@@ -25,9 +25,9 @@ Common:
   -h, --help                   Show this help.
 
 Generated scripts:
-  run.sh                       Start worker in background.
-  stop.sh                      Stop worker.
-  status.sh                    Show pid, port, health, and recent snapshot.
+  run.sh                       Clean intermediate spool and start worker in background.
+  stop.sh                      Stop worker process group.
+  status.sh                    Show pid, pgid, port, health, and recent snapshot.
   logs.sh [-f] [LINES]         Read or follow worker log file.
 EOF
 }
@@ -151,6 +151,7 @@ data_dir="${worker_dir}/data"
 input_dir="${worker_dir}/input"
 logs_dir="${worker_dir}/logs"
 pid_file="${worker_dir}/worker-agent.pid"
+pgid_file="${worker_dir}/worker-agent.pgid"
 worker_log="${logs_dir}/worker-agent.log"
 launcher_log="${logs_dir}/launcher.log"
 
@@ -200,7 +201,9 @@ WORKER_DIR=${worker_dir@Q}
 REPO_DIR=${repo_dir@Q}
 ENV_FILE="\$WORKER_DIR/worker.env"
 PID_FILE=${pid_file@Q}
+PGID_FILE=${pgid_file@Q}
 LAUNCHER_LOG=${launcher_log@Q}
+WORKER_LOG=${worker_log@Q}
 PORT=${port}
 
 mkdir -p "\$WORKER_DIR/logs"
@@ -218,16 +221,35 @@ fi
 port_pid="\$(ss -ltnp "sport = :\$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n1 || true)"
 if [[ -n "\$port_pid" ]]; then
   echo "\$port_pid" > "\$PID_FILE"
+  port_pgid="\$(ps -o pgid= -p "\$port_pid" 2>/dev/null | tr -d ' ' || true)"
+  if [[ -n "\$port_pgid" ]]; then
+    echo "\$port_pgid" > "\$PGID_FILE"
+  fi
   echo "${name} already running on port \$PORT: pid=\$port_pid"
-  echo "worker log: ${worker_log}"
+  echo "worker log: \$WORKER_LOG"
   exit 0
 fi
 
+clean_dir() {
+  mkdir -p "\$1"
+  find "\$1" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
+clean_dir "\$WORKER_DIR/data/spool/uploads"
+clean_dir "\$WORKER_DIR/data/spool/outgoing"
+clean_dir "\$WORKER_DIR/data/spool/artifacts"
+clean_dir "\$WORKER_DIR/data/spool/tmp"
+
 setsid bash -lc "cd '\$REPO_DIR' && exec env WORKER_ENV_FILE='\$ENV_FILE' GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go/pkg/mod go run ./worker-node/go/cmd/worker-agent" >>"\$LAUNCHER_LOG" 2>&1 &
 pid=\$!
+pgid="\$(ps -o pgid= -p "\$pid" 2>/dev/null | tr -d ' ' || true)"
+if [[ -z "\$pgid" ]]; then
+  pgid="\$pid"
+fi
 echo "\$pid" > "\$PID_FILE"
-echo "${name} started: pid=\$pid"
-echo "worker log: ${worker_log}"
+echo "\$pgid" > "\$PGID_FILE"
+echo "${name} started: pid=\$pid pgid=\$pgid"
+echo "worker log: \$WORKER_LOG"
 echo "launcher log: \$LAUNCHER_LOG"
 EOF
 
@@ -236,35 +258,54 @@ cat >"${worker_dir}/stop.sh" <<EOF
 set -euo pipefail
 
 PID_FILE=${pid_file@Q}
+PGID_FILE=${pgid_file@Q}
 PORT=${port}
 
 pid=""
+pgid=""
 if [[ -f "\$PID_FILE" ]]; then
   pid="\$(cat "\$PID_FILE")"
+fi
+if [[ -f "\$PGID_FILE" ]]; then
+  pgid="\$(cat "\$PGID_FILE")"
 fi
 
 if [[ -z "\$pid" ]] || ! kill -0 "\$pid" 2>/dev/null; then
   pid="\$(ss -ltnp "sport = :\$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n1 || true)"
+  pgid=""
 fi
 
 if [[ -z "\$pid" ]] || ! kill -0 "\$pid" 2>/dev/null; then
-  rm -f "\$PID_FILE"
+  rm -f "\$PID_FILE" "\$PGID_FILE"
   echo "${name} is not running"
   exit 0
 fi
 
-kill -- "-\$pid" 2>/dev/null || kill "\$pid" 2>/dev/null || true
+if [[ -z "\$pgid" ]]; then
+  pgid="\$(ps -o pgid= -p "\$pid" 2>/dev/null | tr -d ' ' || true)"
+fi
+self_pgid="\$(ps -o pgid= -p "\$\$" 2>/dev/null | tr -d ' ' || true)"
+
+if [[ -n "\$pgid" && "\$pgid" != "\$self_pgid" ]]; then
+  kill -- "-\$pgid" 2>/dev/null || kill "\$pid" 2>/dev/null || true
+else
+  kill "\$pid" 2>/dev/null || true
+fi
 for _ in {1..30}; do
   if ! kill -0 "\$pid" 2>/dev/null; then
-    rm -f "\$PID_FILE"
+    rm -f "\$PID_FILE" "\$PGID_FILE"
     echo "${name} stopped"
     exit 0
   fi
   sleep 0.2
 done
 
-kill -9 -- "-\$pid" 2>/dev/null || kill -9 "\$pid" 2>/dev/null || true
-rm -f "\$PID_FILE"
+if [[ -n "\$pgid" && "\$pgid" != "\$self_pgid" ]]; then
+  kill -9 -- "-\$pgid" 2>/dev/null || kill -9 "\$pid" 2>/dev/null || true
+else
+  kill -9 "\$pid" 2>/dev/null || true
+fi
+rm -f "\$PID_FILE" "\$PGID_FILE"
 echo "${name} killed after timeout"
 EOF
 
@@ -273,17 +314,26 @@ cat >"${worker_dir}/status.sh" <<EOF
 set -euo pipefail
 
 PID_FILE=${pid_file@Q}
+PGID_FILE=${pgid_file@Q}
 PORT=${port}
 ADVERTISED=${advertised@Q}
 ENTRY=${entry_url@Q}
 WORKER_LOG=${worker_log@Q}
 
 pid=""
+pgid=""
 if [[ -f "\$PID_FILE" ]]; then
   pid="\$(cat "\$PID_FILE")"
 fi
+if [[ -f "\$PGID_FILE" ]]; then
+  pgid="\$(cat "\$PGID_FILE")"
+fi
 if [[ -z "\$pid" ]] || ! kill -0 "\$pid" 2>/dev/null; then
   pid="\$(ss -ltnp "sport = :\$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n1 || true)"
+  pgid=""
+fi
+if [[ -n "\$pid" && -z "\$pgid" ]]; then
+  pgid="\$(ps -o pgid= -p "\$pid" 2>/dev/null | tr -d ' ' || true)"
 fi
 
 echo "name: ${name}"
@@ -291,9 +341,14 @@ echo "entry: \$ENTRY"
 echo "advertised: \$ADVERTISED"
 echo "port: \$PORT"
 if [[ -n "\$pid" ]] && kill -0 "\$pid" 2>/dev/null; then
-  echo "process: running pid=\$pid"
+  echo "process: running pid=\$pid pgid=\$pgid"
 else
   echo "process: stopped"
+fi
+
+if [[ -n "\$pgid" ]] && command -v ps >/dev/null 2>&1; then
+  echo "process group:"
+  ps -o pid,ppid,pgid,stat,cmd -g "\$pgid" 2>/dev/null || true
 fi
 
 if command -v curl >/dev/null 2>&1; then

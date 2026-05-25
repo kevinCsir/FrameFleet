@@ -45,6 +45,19 @@ registers jobs with Entry.
 /home/ckw/framefleet-workers/worker-19001/stop.sh
 ```
 
+`run.sh` cleans intermediate spool directories before starting:
+
+```text
+data/spool/uploads
+data/spool/outgoing
+data/spool/artifacts
+data/spool/tmp
+```
+
+It does not clean `input/` or `data/spool/results/`. `stop.sh` terminates the
+recorded process group so WorkerGo, C++ engine slots, and ffmpeg children are
+stopped together.
+
 WorkerGo logs go to:
 
 ```text
@@ -72,4 +85,3 @@ logs/launcher.log
 ```
 
 Run `deploy/worker-template/init-worker.sh --help` for the full list.
-
