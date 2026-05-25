@@ -74,6 +74,12 @@ This file is the quick-start memo for agents working on FrameFleet.
 
 - WorkerGo must finish initialization and start its HTTP server before starting
   the source scan loop; Entry may assign work back to the source worker.
+- For external/manual multi-worker deployments, prefer
+  `deploy/worker-template/init-worker.sh` instead of hand-writing runtime
+  directories. The generated runtime keeps `worker.env`, `input/`, `data/`,
+  `logs/`, and `run.sh`/`stop.sh`/`status.sh`/`logs.sh` together. Worker logs
+  should go to the instance's `logs/worker-agent.log`, and agents should inspect
+  logs through files rather than relying on terminal stdout.
 - B/E HTTP handlers should acknowledge quickly and do blocking slot work in
   background goroutines.
 - Slot subprocesses are single-request-at-a-time. Preserve request/response

@@ -2,6 +2,7 @@
 bin/
 build/
 dist/
+/worker-agent
 *.exe
 *.dll
 *.so

@@ -128,6 +128,33 @@ SPLIT_MAX_SEGMENTS=8
 
 ## 启动真实 Worker
 
+推荐用项目内模板生成器创建项目外 Worker 运行目录。它会生成
+`worker.env`、数据目录、日志目录，以及 `run.sh`/`stop.sh`/`status.sh`/`logs.sh`：
+
+```bash
+deploy/worker-template/init-worker.sh \
+  --name worker-19001 \
+  --root /home/ckw/framefleet-workers \
+  --port 19001 \
+  --entry http://127.0.0.1:18080 \
+  --advertised 127.0.0.1:19001 \
+  --slots 2
+```
+
+运行：
+
+```bash
+/home/ckw/framefleet-workers/worker-19001/run.sh
+/home/ckw/framefleet-workers/worker-19001/status.sh
+/home/ckw/framefleet-workers/worker-19001/logs.sh -f
+/home/ckw/framefleet-workers/worker-19001/stop.sh
+```
+
+模板默认让 WorkerGo 日志写到该实例的 `logs/worker-agent.log`，不在标准输出刷业务日志。模板详情见
+`deploy/worker-template/README.md`。
+
+也可以手工启动：
+
 ```bash
 source ~/.zshrc
 WORKER_LISTEN_ADDR=:19001 \
