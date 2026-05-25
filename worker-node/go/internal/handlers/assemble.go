@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -66,11 +65,7 @@ func (h *Handler) runAssembleGIF(req protocol.StartAssembleGIFRequest, workerID 
 	ctx := context.Background()
 
 	inputs := make([]engineprotocol.FileRef, len(req.Segments))
-	errs := make(chan error, len(req.Segments))
-	var wg sync.WaitGroup
 	for i, segment := range req.Segments {
-		i := i
-		segment := segment
 		localPath := h.spool.AssembleArtifactPath(req.JobID, segment.TaskID)
 		inputs[i] = engineprotocol.FileRef{
 			Mode: engineprotocol.DataModeFile,
@@ -78,23 +73,27 @@ func (h *Handler) runAssembleGIF(req protocol.StartAssembleGIFRequest, workerID 
 			Name: filepath.Base(localPath),
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := h.peers.DownloadArtifact(ctx, segment.WorkerAddress, segment.TaskID, localPath); err != nil {
-				errs <- fmt.Errorf("download artifact %s failed: %w", segment.TaskID, err)
-			}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			reason := err.Error()
+		h.logger.Info("assemble artifact download started",
+			"event", "assemble_artifact_download_started",
+			"job_id", req.JobID,
+			"task_id", segment.TaskID,
+			"segment_index", segment.SegmentIndex,
+			"worker_address", segment.WorkerAddress,
+			"local_path", localPath,
+		)
+		if err := h.peers.DownloadArtifact(ctx, segment.WorkerAddress, segment.TaskID, localPath); err != nil {
+			reason := fmt.Sprintf("download artifact %s failed: %v", segment.TaskID, err)
 			h.reportAssembleFailed(ctx, req.JobID, workerID, reason, true)
 			return
 		}
+		h.logger.Info("assemble artifact download completed",
+			"event", "assemble_artifact_download_completed",
+			"job_id", req.JobID,
+			"task_id", segment.TaskID,
+			"segment_index", segment.SegmentIndex,
+			"worker_address", segment.WorkerAddress,
+			"local_path", localPath,
+		)
 	}
 
 	resultName := req.JobID + ".gif"
