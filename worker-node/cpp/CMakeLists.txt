@@ -37,3 +37,15 @@ target_include_directories(framefleet-artifact-test PRIVATE
 )
 
 add_test(NAME framefleet-artifact-test COMMAND framefleet-artifact-test)
+
+add_executable(framefleet-protocol-test
+    tests/protocol_test.cpp
+    src/protocol.cpp
+)
+
+target_include_directories(framefleet-protocol-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+
+add_test(NAME framefleet-protocol-test COMMAND framefleet-protocol-test)

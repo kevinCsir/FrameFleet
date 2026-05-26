@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"framefleet/pkg/protocol"
 	"io"
 	"log/slog"
 	"os"
@@ -117,11 +118,11 @@ func TestCppEngineFakeOperations(t *testing.T) {
 	})
 
 	t.Run("process_segment", func(t *testing.T) {
-		outputPath := filepath.Join(tmp, "artifacts", "task_123.segment")
+		outputPath := filepath.Join(tmp, "artifacts", "task_123.gif")
 		resp := callEngine(t, pool, engineprotocol.Request{
 			Operation: engineprotocol.OpProcessSegment,
 			Input:     fileRef(inputPath, "task_123.input"),
-			Output:    fileRef(outputPath, "task_123.segment"),
+			Output:    fileRef(outputPath, "task_123.gif"),
 		})
 		if resp.Type != engineprotocol.ResponseTypeCompleted {
 			t.Fatalf("type = %q, want completed", resp.Type)
@@ -130,8 +131,8 @@ func TestCppEngineFakeOperations(t *testing.T) {
 	})
 
 	t.Run("assemble_gif", func(t *testing.T) {
-		first := filepath.Join(tmp, "artifacts", "first.segment")
-		second := filepath.Join(tmp, "artifacts", "second.segment")
+		first := filepath.Join(tmp, "artifacts", "first.gif")
+		second := filepath.Join(tmp, "artifacts", "second.gif")
 		outputPath := filepath.Join(tmp, "results", "assembled.gif")
 		writeFile(t, first, []byte("first-"))
 		writeFile(t, second, []byte("second"))
@@ -139,8 +140,8 @@ func TestCppEngineFakeOperations(t *testing.T) {
 		resp := callEngine(t, pool, engineprotocol.Request{
 			Operation: engineprotocol.OpAssembleGIF,
 			Inputs: []engineprotocol.FileRef{
-				*fileRef(first, "first.segment"),
-				*fileRef(second, "second.segment"),
+				*fileRef(first, "first.gif"),
+				*fileRef(second, "second.gif"),
 			},
 			Output: fileRef(outputPath, "assembled.gif"),
 		})
@@ -212,7 +213,7 @@ func TestCppEngineRealVideoPipeline(t *testing.T) {
 		if segment.SizeBytes <= 0 {
 			t.Fatalf("segment %d has size %d", segment.SegmentIndex, segment.SizeBytes)
 		}
-		artifactPath := filepath.Join(tmp, "artifacts", segment.Name+".segment")
+		artifactPath := filepath.Join(tmp, "artifacts", segment.Name+".gif")
 		processResp := callEngineWithTimeout(t, pool, 10*time.Second, engineprotocol.Request{
 			Operation: engineprotocol.OpProcessSegment,
 			Input:     fileRef(segment.Path, segment.Name),
@@ -227,19 +228,27 @@ func TestCppEngineRealVideoPipeline(t *testing.T) {
 		inputs = append(inputs, *fileRef(artifactPath, filepath.Base(artifactPath)))
 	}
 
-	resultPath := filepath.Join(tmp, "results", "result.gif")
-	assembleResp := callEngineWithTimeout(t, pool, 15*time.Second, engineprotocol.Request{
-		Operation: engineprotocol.OpAssembleGIF,
-		Inputs:    inputs,
-		Output:    fileRef(resultPath, "result.gif"),
-	})
-	if assembleResp.Type != engineprotocol.ResponseTypeCompleted {
-		t.Fatalf("assemble type = %q, reason = %q", assembleResp.Type, assembleResp.Reason)
+	for _, mode := range []protocol.GIFAssembleMode{
+		protocol.GIFAssembleModeLocalPaletteConcat,
+		protocol.GIFAssembleModeGlobalPaletteRecode,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			resultPath := filepath.Join(tmp, "results", string(mode)+".gif")
+			assembleResp := callEngineWithTimeout(t, pool, 15*time.Second, engineprotocol.Request{
+				Operation:    engineprotocol.OpAssembleGIF,
+				AssembleMode: mode,
+				Inputs:       inputs,
+				Output:       fileRef(resultPath, "result.gif"),
+			})
+			if assembleResp.Type != engineprotocol.ResponseTypeCompleted {
+				t.Fatalf("assemble type = %q, reason = %q", assembleResp.Type, assembleResp.Reason)
+			}
+			if assembleResp.FrameCount <= 0 || assembleResp.OutputSizeBytes <= 0 {
+				t.Fatalf("assemble returned frame_count=%d output_size_bytes=%d", assembleResp.FrameCount, assembleResp.OutputSizeBytes)
+			}
+			assertGIFFile(t, resultPath)
+		})
 	}
-	if assembleResp.FrameCount <= 0 || assembleResp.OutputSizeBytes <= 0 {
-		t.Fatalf("assemble returned frame_count=%d output_size_bytes=%d", assembleResp.FrameCount, assembleResp.OutputSizeBytes)
-	}
-	assertGIFFile(t, resultPath)
 }
 
 func TestCppEngineUncappedSplitHonorsSizeTargetWithinTolerance(t *testing.T) {

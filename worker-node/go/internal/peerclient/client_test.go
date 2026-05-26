@@ -32,7 +32,7 @@ func TestDownloadArtifactUsesIdleTimeoutNotTotalTimeout(t *testing.T) {
 	client.http.Timeout = 10 * time.Millisecond
 	client.transferHTTP = server.Client()
 
-	outputPath := filepath.Join(t.TempDir(), "artifact.segment")
+	outputPath := filepath.Join(t.TempDir(), "artifact.gif")
 	if err := client.DownloadArtifact(context.Background(), strings.TrimPrefix(server.URL, "http://"), "task_slow", outputPath); err != nil {
 		t.Fatalf("DownloadArtifact failed: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestDownloadArtifactReportsIdleTimeoutWhenStreamStalls(t *testing.T) {
 	client := New()
 	client.transferHTTP = server.Client()
 
-	err := client.DownloadArtifact(context.Background(), strings.TrimPrefix(server.URL, "http://"), "task_stall", filepath.Join(t.TempDir(), "artifact.segment"))
+	err := client.DownloadArtifact(context.Background(), strings.TrimPrefix(server.URL, "http://"), "task_stall", filepath.Join(t.TempDir(), "artifact.gif"))
 	if err == nil {
 		t.Fatal("DownloadArtifact succeeded, want idle timeout")
 	}

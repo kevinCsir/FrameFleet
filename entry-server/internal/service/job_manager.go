@@ -27,9 +27,10 @@ var (
 type JobManager struct {
 	mu sync.RWMutex
 
-	logger  *logger.Logger
-	workers *WorkerRegistry
-	client  *http.Client
+	logger           *logger.Logger
+	workers          *WorkerRegistry
+	client           *http.Client
+	processingPolicy protocol.ProcessingPolicy
 
 	jobs            map[string]*model.Job
 	tasks           map[string]*model.Task
@@ -45,14 +46,15 @@ type CreateJobResult struct {
 	JobStatus      protocol.JobStatus
 }
 
-func NewJobManager(workers *WorkerRegistry, appLogger *logger.Logger) *JobManager {
+func NewJobManager(workers *WorkerRegistry, processingPolicy protocol.ProcessingPolicy, appLogger *logger.Logger) *JobManager {
 	return &JobManager{
-		logger:          appLogger,
-		workers:         workers,
-		client:          &http.Client{Timeout: 5 * time.Second},
-		jobs:            make(map[string]*model.Job),
-		tasks:           make(map[string]*model.Task),
-		jobIDByIdentity: make(map[string]string),
+		logger:           appLogger,
+		workers:          workers,
+		client:           &http.Client{Timeout: 5 * time.Second},
+		processingPolicy: processingPolicy,
+		jobs:             make(map[string]*model.Job),
+		tasks:            make(map[string]*model.Task),
+		jobIDByIdentity:  make(map[string]string),
 	}
 }
 
@@ -519,6 +521,7 @@ func (m *JobManager) startAssembleGIF(jobID string) error {
 	req := protocol.StartAssembleGIFRequest{
 		JobID:          job.ID,
 		AssembleTaskID: taskID,
+		AssembleMode:   m.processingPolicy.AssembleMode,
 		Video: protocol.AssembleVideoInfo{
 			Name:                videoName,
 			SourceWorkerID:      sourceWorkerID,

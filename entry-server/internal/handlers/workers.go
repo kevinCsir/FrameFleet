@@ -12,13 +12,14 @@ import (
 )
 
 type WorkerHandler struct {
-	registry    *service.WorkerRegistry
-	splitPolicy protocol.SplitPolicy
-	logger      *logger.Logger
+	registry         *service.WorkerRegistry
+	splitPolicy      protocol.SplitPolicy
+	processingPolicy protocol.ProcessingPolicy
+	logger           *logger.Logger
 }
 
-func NewWorkerHandler(registry *service.WorkerRegistry, splitPolicy protocol.SplitPolicy, appLogger *logger.Logger) *WorkerHandler {
-	return &WorkerHandler{registry: registry, splitPolicy: splitPolicy, logger: appLogger}
+func NewWorkerHandler(registry *service.WorkerRegistry, splitPolicy protocol.SplitPolicy, processingPolicy protocol.ProcessingPolicy, appLogger *logger.Logger) *WorkerHandler {
+	return &WorkerHandler{registry: registry, splitPolicy: splitPolicy, processingPolicy: processingPolicy, logger: appLogger}
 }
 
 func (h *WorkerHandler) Register(c *gin.Context) {
@@ -57,9 +58,10 @@ func (h *WorkerHandler) Register(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, protocol.RegisterWorkerResponse{
-		Status:      status,
-		WorkerID:    worker.ID,
-		SplitPolicy: h.splitPolicy,
+		Status:           status,
+		WorkerID:         worker.ID,
+		SplitPolicy:      h.splitPolicy,
+		ProcessingPolicy: h.processingPolicy,
 	})
 }
 

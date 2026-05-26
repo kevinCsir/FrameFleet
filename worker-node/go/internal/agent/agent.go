@@ -66,51 +66,14 @@ func New(cfg config.Config) (*Agent, error) {
 	entry := entryclient.New(cfg.EntryBaseURL)
 	peers := peerclient.New()
 
-	pool, err := enginepool.New(enginepool.Config{
-		Slots:              cfg.TotalSlots,
-		BinaryPath:         cfg.EngineBinaryPath,
-		DataDir:            cfg.DataDir,
-		CannyLowThreshold:  cfg.CannyLowThreshold,
-		CannyHighThreshold: cfg.CannyHighThreshold,
-	}, logger)
-	if err != nil {
-		_ = closeLog()
-		return nil, err
-	}
-
-	sourceRunner := sourceworker.New(sourceworker.Config{
-		InputDir: cfg.InputDir,
-		Interval: cfg.SourceScanInterval,
-	}, logger, entry, peers, pool, spoolManager, state)
-
 	return &Agent{
-		cfg:        cfg,
-		logger:     logger,
-		enginePool: pool,
-		spool:      spoolManager,
-		monitor:    taskmonitor.New(cfg.HeartbeatInterval, logger),
-		entry:      entry,
-		state:      state,
-		heartbeat: heartbeat.New(entry, state, cfg.HeartbeatInterval, logger, func() heartbeat.RuntimeSnapshot {
-			slots := pool.Snapshot()
-			idle := 0
-			busy := 0
-			for _, slot := range slots {
-				if slot.State == "idle" {
-					idle++
-				} else {
-					busy++
-				}
-			}
-			return heartbeat.RuntimeSnapshot{
-				Source:    sourceRunner.Snapshot(),
-				Slots:     slots,
-				SlotsIdle: idle,
-				SlotsBusy: busy,
-			}
-		}),
+		cfg:      cfg,
+		logger:   logger,
+		spool:    spoolManager,
+		monitor:  taskmonitor.New(cfg.HeartbeatInterval, logger),
+		entry:    entry,
+		state:    state,
 		peers:    peers,
-		source:   sourceRunner,
 		closeLog: closeLog,
 	}, nil
 }
@@ -118,10 +81,6 @@ func New(cfg config.Config) (*Agent, error) {
 func (a *Agent) Run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	if err := a.enginePool.Start(ctx); err != nil {
-		return err
-	}
 
 	disk := a.state.DiskUsage()
 	registerResp, err := a.entry.RegisterWorker(ctx, protocol.RegisterWorkerRequest{
@@ -134,14 +93,57 @@ func (a *Agent) Run() error {
 	if err != nil {
 		return err
 	}
-	a.state.SetRegistration(registerResp.WorkerID, registerResp.SplitPolicy)
+	a.state.SetRegistration(registerResp.WorkerID, registerResp.SplitPolicy, registerResp.ProcessingPolicy)
+	processingPolicy := a.state.ProcessingPolicy()
 	a.logger.Info("worker registered with entry",
 		"event", "worker_entry_registered",
 		"worker_id", registerResp.WorkerID,
 		"split_target_segment_duration_ms", registerResp.SplitPolicy.TargetSegmentDurationMS,
 		"split_target_segment_size_bytes", registerResp.SplitPolicy.TargetSegmentSizeBytes,
 		"split_max_segments", registerResp.SplitPolicy.MaxSegments,
+		"processing_canny_low_threshold", processingPolicy.CannyLowThreshold,
+		"processing_canny_high_threshold", processingPolicy.CannyHighThreshold,
+		"processing_assemble_mode", processingPolicy.AssembleMode,
 	)
+
+	pool, err := enginepool.New(enginepool.Config{
+		Slots:              a.cfg.TotalSlots,
+		BinaryPath:         a.cfg.EngineBinaryPath,
+		DataDir:            a.cfg.DataDir,
+		CannyLowThreshold:  processingPolicy.CannyLowThreshold,
+		CannyHighThreshold: processingPolicy.CannyHighThreshold,
+	}, a.logger)
+	if err != nil {
+		return err
+	}
+	if err := pool.Start(ctx); err != nil {
+		return err
+	}
+	a.enginePool = pool
+
+	sourceRunner := sourceworker.New(sourceworker.Config{
+		InputDir: a.cfg.InputDir,
+		Interval: a.cfg.SourceScanInterval,
+	}, a.logger, a.entry, a.peers, pool, a.spool, a.state)
+	a.source = sourceRunner
+	a.heartbeat = heartbeat.New(a.entry, a.state, a.cfg.HeartbeatInterval, a.logger, func() heartbeat.RuntimeSnapshot {
+		slots := pool.Snapshot()
+		idle := 0
+		busy := 0
+		for _, slot := range slots {
+			if slot.State == "idle" {
+				idle++
+			} else {
+				busy++
+			}
+		}
+		return heartbeat.RuntimeSnapshot{
+			Source:    sourceRunner.Snapshot(),
+			Slots:     slots,
+			SlotsIdle: idle,
+			SlotsBusy: busy,
+		}
+	})
 	defer func() {
 		if err := a.enginePool.Stop(context.Background()); err != nil {
 			a.logger.Error("engine pool stop failed", "event", "engine_pool_stop_failed", "error", err)

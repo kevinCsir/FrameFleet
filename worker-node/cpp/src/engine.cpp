@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -453,9 +454,9 @@ std::string frame_file_name(std::uint64_t index) {
     return out.str();
 }
 
-void assemble_gif_with_ffmpeg(const std::filesystem::path& frames_pattern,
-                              double fps,
-                              const std::string& output_path) {
+void encode_png_sequence_to_gif(const std::filesystem::path& frames_pattern,
+                                double fps,
+                                const std::string& output_path) {
     const auto ffmpeg = env_or_default("FRAMEFLEET_FFMPEG_PATH", "ffmpeg");
     run_process({
         ffmpeg,
@@ -472,6 +473,285 @@ void assemble_gif_with_ffmpeg(const std::filesystem::path& frames_pattern,
         "-plays", "0",
         output_path,
     });
+}
+
+std::uint16_t read_u16_le(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
+    if (offset + 2 > bytes.size()) {
+        throw std::runtime_error("truncated gif u16");
+    }
+    return static_cast<std::uint16_t>(bytes[offset]) |
+           static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8);
+}
+
+void write_u16_le(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xff));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8) & 0xff));
+}
+
+void append_range(std::vector<std::uint8_t>& output,
+                  const std::vector<std::uint8_t>& input,
+                  std::size_t begin,
+                  std::size_t end) {
+    if (begin > end || end > input.size()) {
+        throw std::runtime_error("invalid gif byte range");
+    }
+    output.insert(output.end(), input.begin() + static_cast<std::ptrdiff_t>(begin),
+                  input.begin() + static_cast<std::ptrdiff_t>(end));
+}
+
+std::size_t gif_color_table_size(std::uint8_t packed) {
+    return static_cast<std::size_t>(3) * (static_cast<std::size_t>(1) << ((packed & 0x07) + 1));
+}
+
+std::size_t skip_gif_sub_blocks(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
+    while (true) {
+        if (offset >= bytes.size()) {
+            throw std::runtime_error("truncated gif sub-blocks");
+        }
+        const auto size = static_cast<std::size_t>(bytes[offset]);
+        offset++;
+        if (offset + size > bytes.size()) {
+            throw std::runtime_error("truncated gif sub-block payload");
+        }
+        offset += size;
+        if (size == 0) {
+            return offset;
+        }
+    }
+}
+
+std::vector<std::uint8_t> read_binary_file(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("open gif input failed: " + path);
+    }
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
+                                     std::istreambuf_iterator<char>());
+}
+
+struct GifInfo {
+    std::uint16_t width = 0;
+    std::uint16_t height = 0;
+    std::vector<std::uint8_t> global_color_table;
+    std::uint8_t global_color_table_size_code = 0;
+    std::size_t data_offset = 0;
+    int frame_count = 0;
+};
+
+GifInfo parse_gif_header(const std::vector<std::uint8_t>& bytes) {
+    if (bytes.size() < 13) {
+        throw std::runtime_error("gif input is too small");
+    }
+    const std::string signature(reinterpret_cast<const char*>(bytes.data()), 6);
+    if (signature != "GIF87a" && signature != "GIF89a") {
+        throw std::runtime_error("input is not a gif");
+    }
+
+    GifInfo info;
+    info.width = read_u16_le(bytes, 6);
+    info.height = read_u16_le(bytes, 8);
+    const auto packed = bytes[10];
+    std::size_t offset = 13;
+    if ((packed & 0x80) != 0) {
+        info.global_color_table_size_code = packed & 0x07;
+        const auto size = gif_color_table_size(packed);
+        if (offset + size > bytes.size()) {
+            throw std::runtime_error("truncated gif global color table");
+        }
+        info.global_color_table.assign(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                                       bytes.begin() + static_cast<std::ptrdiff_t>(offset + size));
+        offset += size;
+    }
+    info.data_offset = offset;
+    return info;
+}
+
+int count_gif_frames(const std::string& path) {
+    const auto bytes = read_binary_file(path);
+    auto info = parse_gif_header(bytes);
+    std::size_t offset = info.data_offset;
+    int frames = 0;
+    while (offset < bytes.size()) {
+        const auto marker = bytes[offset];
+        if (marker == 0x3b) {
+            return frames;
+        }
+        if (marker == 0x21) {
+            if (offset + 2 > bytes.size()) {
+                throw std::runtime_error("truncated gif extension");
+            }
+            offset = skip_gif_sub_blocks(bytes, offset + 2);
+            continue;
+        }
+        if (marker == 0x2c) {
+            if (offset + 10 > bytes.size()) {
+                throw std::runtime_error("truncated gif image descriptor");
+            }
+            const auto packed = bytes[offset + 9];
+            offset += 10;
+            if ((packed & 0x80) != 0) {
+                offset += gif_color_table_size(packed);
+                if (offset > bytes.size()) {
+                    throw std::runtime_error("truncated gif local color table");
+                }
+            }
+            if (offset >= bytes.size()) {
+                throw std::runtime_error("truncated gif image data");
+            }
+            offset++;
+            offset = skip_gif_sub_blocks(bytes, offset);
+            frames++;
+            continue;
+        }
+        throw std::runtime_error("unknown gif block marker");
+    }
+    throw std::runtime_error("gif missing trailer");
+}
+
+int concat_gifs_preserving_local_palettes(const std::vector<FileRef>& inputs,
+                                          const std::string& output_path) {
+    if (inputs.empty()) {
+        throw std::runtime_error("gif concat requires inputs");
+    }
+
+    std::vector<std::uint8_t> output;
+    output.insert(output.end(), {'G', 'I', 'F', '8', '9', 'a'});
+
+    std::uint16_t width = 0;
+    std::uint16_t height = 0;
+    int frame_count = 0;
+    bool wrote_header = false;
+
+    for (const auto& input : inputs) {
+        const auto bytes = read_binary_file(input.path);
+        const auto info = parse_gif_header(bytes);
+        if (!wrote_header) {
+            width = info.width;
+            height = info.height;
+            write_u16_le(output, width);
+            write_u16_le(output, height);
+            output.push_back(0x00);
+            output.push_back(0x00);
+            output.push_back(0x00);
+            output.insert(output.end(), {0x21, 0xff, 0x0b});
+            const std::string netscape = "NETSCAPE2.0";
+            output.insert(output.end(), netscape.begin(), netscape.end());
+            output.insert(output.end(), {0x03, 0x01, 0x00, 0x00, 0x00});
+            wrote_header = true;
+        } else if (width != info.width || height != info.height) {
+            throw std::runtime_error("gif dimensions differ while assembling");
+        }
+
+        std::size_t offset = info.data_offset;
+        while (offset < bytes.size()) {
+            const auto marker = bytes[offset];
+            if (marker == 0x3b) {
+                break;
+            }
+            if (marker == 0x21) {
+                if (offset + 2 > bytes.size()) {
+                    throw std::runtime_error("truncated gif extension");
+                }
+                const auto label = bytes[offset + 1];
+                const auto end = skip_gif_sub_blocks(bytes, offset + 2);
+                if (label != 0xff) {
+                    append_range(output, bytes, offset, end);
+                }
+                offset = end;
+                continue;
+            }
+            if (marker == 0x2c) {
+                if (offset + 10 > bytes.size()) {
+                    throw std::runtime_error("truncated gif image descriptor");
+                }
+                const auto descriptor_offset = offset;
+                const auto packed = bytes[offset + 9];
+                const bool has_local_color_table = (packed & 0x80) != 0;
+                offset += 10;
+
+                std::size_t local_color_table_size = 0;
+                if (has_local_color_table) {
+                    local_color_table_size = gif_color_table_size(packed);
+                    if (offset + local_color_table_size > bytes.size()) {
+                        throw std::runtime_error("truncated gif local color table");
+                    }
+                } else if (info.global_color_table.empty()) {
+                    throw std::runtime_error("gif image has no local or global color table");
+                }
+
+                if (has_local_color_table) {
+                    append_range(output, bytes, descriptor_offset, offset + local_color_table_size);
+                    offset += local_color_table_size;
+                } else {
+                    append_range(output, bytes, descriptor_offset, descriptor_offset + 9);
+                    const auto new_packed = static_cast<std::uint8_t>(
+                        (packed & 0x78) | 0x80 | info.global_color_table_size_code);
+                    output.push_back(new_packed);
+                    output.insert(output.end(), info.global_color_table.begin(), info.global_color_table.end());
+                }
+
+                if (offset >= bytes.size()) {
+                    throw std::runtime_error("truncated gif image data");
+                }
+                const auto image_data_offset = offset;
+                offset++;
+                const auto end = skip_gif_sub_blocks(bytes, offset);
+                append_range(output, bytes, image_data_offset, end);
+                frame_count++;
+                offset = end;
+                continue;
+            }
+            throw std::runtime_error("unknown gif block marker while concatenating");
+        }
+    }
+
+    output.push_back(0x3b);
+    write_binary_file(output_path, output);
+    return frame_count;
+}
+
+void recode_gifs_with_global_palette(const std::vector<FileRef>& inputs,
+                                     const std::string& output_path) {
+    if (inputs.empty()) {
+        throw std::runtime_error("gif recode requires inputs");
+    }
+
+    const auto ffmpeg = env_or_default("FRAMEFLEET_FFMPEG_PATH", "ffmpeg");
+    std::vector<std::string> argv{
+        ffmpeg,
+        "-hide_banner",
+        "-v", "error",
+        "-nostdin",
+        "-y",
+        "-threads", "1",
+        "-filter_threads", "1",
+        "-filter_complex_threads", "1",
+    };
+    for (const auto& input : inputs) {
+        argv.push_back("-ignore_loop");
+        argv.push_back("1");
+        argv.push_back("-i");
+        argv.push_back(input.path);
+    }
+
+    std::ostringstream filter;
+    if (inputs.size() == 1) {
+        filter << "[0:v]split[s0][s1];";
+    } else {
+        for (std::size_t index = 0; index < inputs.size(); ++index) {
+            filter << "[" << index << ":v]";
+        }
+        filter << "concat=n=" << inputs.size() << ":v=1:a=0[v];[v]split[s0][s1];";
+    }
+    filter << "[s0]palettegen=reserve_transparent=1:transparency_color=000000[p];"
+           << "[s1][p]paletteuse=alpha_threshold=128";
+
+    argv.push_back("-filter_complex");
+    argv.push_back(filter.str());
+    argv.push_back("-plays");
+    argv.push_back("0");
+    argv.push_back(output_path);
+    run_process(argv);
 }
 
 double capture_fps(cv::VideoCapture& capture) {
@@ -625,7 +905,6 @@ Response handle_process_segment(const Request& request) {
     }
 
     const auto fps = capture_fps(capture);
-    const auto frame_duration = frame_duration_ms(fps);
     auto expected_frame_count = static_cast<int>(capture.get(cv::CAP_PROP_FRAME_COUNT));
     if (expected_frame_count <= 0) {
         expected_frame_count = count_video_frames(request.input->path);
@@ -639,44 +918,32 @@ Response handle_process_segment(const Request& request) {
         throw std::runtime_error("segment video has no frames: " + request.input->path);
     }
 
-    const auto width = static_cast<std::uint32_t>(std::max(1.0, capture.get(cv::CAP_PROP_FRAME_WIDTH)));
-    const auto height = static_cast<std::uint32_t>(std::max(1.0, capture.get(cv::CAP_PROP_FRAME_HEIGHT)));
-
-    ArtifactMetadata metadata;
-    metadata.codec = kArtifactCodecPngBGRA;
-    metadata.width = width;
-    metadata.height = height;
-    metadata.fps_num = static_cast<std::uint32_t>(std::max(1.0, std::round(fps * 1000.0)));
-    metadata.fps_den = 1000;
-    metadata.frame_count = static_cast<std::uint32_t>(expected_frame_count);
-    metadata.segment_index = 0;
-    metadata.duration_ms = static_cast<std::uint64_t>(metadata.frame_count) * frame_duration;
-
-    ArtifactWriter writer(request.output->path, metadata);
+    ensure_parent_dir(request.output->path);
+    TempDir temp(make_temp_dir("framefleet_process_"));
     cv::Mat frame;
     std::uint32_t frame_index = 0;
     while (capture.read(frame)) {
         if (frame.empty()) {
             continue;
         }
-        if (frame_index >= metadata.frame_count) {
+        if (frame_index >= static_cast<std::uint32_t>(expected_frame_count)) {
             break;
         }
         const auto encoded = encode_red_edge_png(frame);
-        writer.write_frame(frame_index, frame_duration, encoded);
+        write_binary_file(temp.path() / frame_file_name(frame_index), encoded);
         frame_index++;
     }
 
-    if (frame_index != metadata.frame_count) {
+    if (frame_index != static_cast<std::uint32_t>(expected_frame_count)) {
         throw std::runtime_error("segment frame count changed while processing");
     }
-    writer.close();
+    encode_png_sequence_to_gif(temp.path() / "frame_%08d.png", fps, request.output->path);
 
     auto response = make_completed_response(request);
     response.artifact_name = request.output->name.empty() ? basename_from_path(request.output->path) : request.output->name;
     response.duration_ms = elapsed_ms(start);
     response.output_size_bytes = file_size_or_zero(request.output->path);
-    response.frame_count = static_cast<int>(metadata.frame_count);
+    response.frame_count = static_cast<int>(frame_index);
     return response;
 }
 
@@ -707,48 +974,27 @@ Response handle_assemble_gif(const Request& request) {
 
     ensure_parent_dir(request.output->path);
 
-    TempDir temp(make_temp_dir("framefleet_assemble_"));
-    std::uint64_t output_frame_index = 0;
-    double fps = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-
-    for (const auto& input : request.inputs) {
-        ArtifactReader reader(input.path);
-        const auto& metadata = reader.metadata();
-        if (metadata.codec != kArtifactCodecPngBGRA) {
-            throw std::runtime_error("unsupported artifact codec while assembling");
+    int output_frame_count = 0;
+    if (request.assemble_mode == kGIFAssembleModeLocalPaletteConcat) {
+        output_frame_count = concat_gifs_preserving_local_palettes(request.inputs, request.output->path);
+    } else if (request.assemble_mode == kGIFAssembleModeGlobalPaletteRecode) {
+        for (const auto& input : request.inputs) {
+            output_frame_count += count_gif_frames(input.path);
         }
-        if (width == 0 && height == 0) {
-            width = metadata.width;
-            height = metadata.height;
-            fps = static_cast<double>(metadata.fps_num) / static_cast<double>(metadata.fps_den);
-        } else if (width != metadata.width || height != metadata.height) {
-            throw std::runtime_error("artifact dimensions differ while assembling");
-        }
-
-        ArtifactFrame frame;
-        while (reader.next_frame(frame)) {
-            const auto frame_path = temp.path() / frame_file_name(output_frame_index);
-            write_binary_file(frame_path, frame.payload);
-            output_frame_index++;
-        }
+        recode_gifs_with_global_palette(request.inputs, request.output->path);
+    } else {
+        throw std::runtime_error("unsupported assemble_mode: " + request.assemble_mode);
     }
 
-    if (output_frame_index == 0) {
-        throw std::runtime_error("assemble_gif received no artifact frames");
+    if (output_frame_count == 0) {
+        throw std::runtime_error("assemble_gif received no gif frames");
     }
-    if (!std::isfinite(fps) || fps <= 0) {
-        fps = 12.0;
-    }
-
-    assemble_gif_with_ffmpeg(temp.path() / "frame_%08d.png", fps, request.output->path);
 
     auto response = make_completed_response(request);
     response.result_name = request.output->name.empty() ? basename_from_path(request.output->path) : request.output->name;
     response.duration_ms = elapsed_ms(start);
     response.output_size_bytes = file_size_or_zero(request.output->path);
-    response.frame_count = static_cast<int>(output_frame_index);
+    response.frame_count = output_frame_count;
     return response;
 }
 

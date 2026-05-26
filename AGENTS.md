@@ -43,8 +43,8 @@ This file is the quick-start memo for agents working on FrameFleet.
 - Job internal/external handling is task-level, not job-level.
 - Go/CPP protocol must stay job/task agnostic: C++ knows ops and file paths,
   not distributed job/task IDs.
-- Worker artifact files are opaque to Go. Phase-one C++ artifacts use FFAF v1;
-  see `worker-node/protocol/ffaf-v1.md`.
+- Worker artifact files are opaque to Go. Phase-one C++ artifacts are segment
+  GIFs; Go stores and transfers them as bytes without parsing GIF internals.
 - Job idempotency is based on:
   `source_worker_address + video_name`.
 - Cross-process request/response structs must be added to `pkg/protocol`, not
@@ -91,10 +91,10 @@ This file is the quick-start memo for agents working on FrameFleet.
 - Keep engine work effectively single-threaded:
   `cv::setNumThreads(1)`, ffmpeg `-threads 1`, `-filter_threads 1`, and
   `-filter_complex_threads 1`.
-- Canny thresholds are worker config:
-  `WORKER_CANNY_LOW_THRESHOLD` and `WORKER_CANNY_HIGH_THRESHOLD`; WorkerGo
-  passes them to slots as `FRAMEFLEET_CANNY_LOW_THRESHOLD` and
-  `FRAMEFLEET_CANNY_HIGH_THRESHOLD`.
+- Canny thresholds are Entry processing policy:
+  `PROCESS_CANNY_LOW_THRESHOLD` and `PROCESS_CANNY_HIGH_THRESHOLD`; Entry
+  returns them in worker registration. Worker-local Canny env vars should not
+  be reintroduced.
 - Entry split defaults are currently 3000 ms target segment duration and
   max 8 segments.
 

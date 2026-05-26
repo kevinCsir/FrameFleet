@@ -21,7 +21,7 @@ The current real processing pipeline is:
 mp4 input
   -> ffprobe/ffmpeg split into mp4 segments
   -> OpenCV Canny per segment
-  -> FFAF v1 single-file segment artifacts
+  -> single-file segment GIF artifacts
   -> ffmpeg palettegen/paletteuse transparent GIF assembly
 ```
 
@@ -1142,19 +1142,17 @@ FRAMEFLEET_FFPROBE_PATH
 
 Canny threshold env consumed by C++:
 
-```text
-FRAMEFLEET_CANNY_LOW_THRESHOLD
-FRAMEFLEET_CANNY_HIGH_THRESHOLD
-```
-
-WorkerGo reads:
+Entry owns processing policy and returns it during worker registration:
 
 ```text
-WORKER_CANNY_LOW_THRESHOLD
-WORKER_CANNY_HIGH_THRESHOLD
+PROCESS_CANNY_LOW_THRESHOLD
+PROCESS_CANNY_HIGH_THRESHOLD
+GIF_ASSEMBLE_MODE
 ```
 
-and passes them to each C++ slot as the `FRAMEFLEET_*` env variables.
+Worker-local Canny env vars are intentionally not supported; otherwise
+different workers can process segments of the same job with inconsistent edge
+parameters.
 
 Code defaults are currently:
 
@@ -1209,82 +1207,26 @@ Current behavior:
 - run Canny
 - build BGRA frames where edge pixels are opaque red and non-edge pixels are
   transparent
-- PNG-encode each BGRA frame
-- write all PNG frames into one FFAF v1 artifact file
+- PNG-encode temporary BGRA frames
+- encode frames into one segment GIF artifact
 - return checksum/frame count/duration/output size
 
 ### assemble_gif
 
 Input:
 
-- ordered FFAF artifact paths
+- ordered segment GIF artifact paths
 - output GIF path
+- assemble mode: `local_palette_concat` or `global_palette_recode`
 
 Current behavior:
 
-- read FFAF artifacts
-- decode each PNG BGRA frame
-- write temporary PNG frames
-- call ffmpeg palettegen/paletteuse with transparency handling
+- `local_palette_concat`: concatenate GIF image/control blocks while preserving
+  each segment's local/global palette as local image palettes
+- `global_palette_recode`: decode segment GIF inputs with ffmpeg and re-encode
+  final GIF with palettegen/paletteuse
 - write final GIF
 - return checksum/duration/output size
-
-## FFAF v1 Artifact Format
-
-Phase-one artifacts use FFAF v1:
-
-```text
-worker-node/protocol/ffaf-v1.md
-```
-
-Purpose:
-
-- Make phase-one output a single opaque file from Go's perspective.
-- Avoid directory artifacts and tar packaging.
-- Keep room for future C++-to-C++ streaming or direct transfer.
-
-Go treats FFAF as opaque bytes. Only C++ writes and reads it.
-
-Header summary:
-
-```text
-magic        "FFAF"
-version      1
-header_size  64
-codec        1 = PNG_BGRA
-width
-height
-fps_num
-fps_den
-frame_count
-segment_index
-duration_ms
-```
-
-Frames are stored sequentially:
-
-```text
-frame_index
-duration_ms
-payload_size
-payload bytes
-```
-
-All integers are unsigned little-endian. Implementations must write fields
-explicitly and must not dump C/C++ structs.
-
-Shared C++ reader/writer code lives in:
-
-```text
-worker-node/cpp/include/framefleet_engine/artifact.hpp
-worker-node/cpp/src/artifact.cpp
-```
-
-Artifact tests live in:
-
-```text
-worker-node/cpp/tests/artifact_test.cpp
-```
 
 ## Engine Slot Pool
 
@@ -1346,14 +1288,12 @@ WORKER_HEARTBEAT_INTERVAL_SECONDS=10
 WORKER_SOURCE_SCAN_INTERVAL_SECONDS=10
 WORKER_DISK_TOTAL_BYTES=1000000000
 WORKER_DISK_FREE_BYTES=800000000
-WORKER_CANNY_LOW_THRESHOLD=80
-WORKER_CANNY_HIGH_THRESHOLD=160
 WORKER_LOG_LEVEL=info
 WORKER_LOG_OUTPUT=stdout|file|both|discard
 WORKER_LOG_FILE=logs/worker-agent.log
 ```
 
-Real smoke scripts override Canny thresholds to `180/360`.
+Real smoke scripts set Entry processing thresholds to `180/360`.
 
 Worker loads `.env` and `worker-node/.env` unless overridden by the current
 loader behavior. Entry loads `.env` and `entry-server/.env`.

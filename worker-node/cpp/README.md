@@ -42,15 +42,10 @@ worker-node/cpp/build/framefleet-engine
 - `ping`: health check.
 - `process_internal_simple`: simple copy path retained for protocol/testing.
 - `split_video`: uses `ffprobe` to read duration and `ffmpeg` to split mp4.
-- `process_segment`: reads mp4 with OpenCV, runs Canny, writes FFAF artifact.
-- `assemble_gif`: reads FFAF artifacts, extracts PNG frames, uses ffmpeg
-  palette generation to produce a transparent GIF.
-
-Phase-one artifacts use FFAF v1:
-
-```text
-worker-node/protocol/ffaf-v1.md
-```
+- `process_segment`: reads mp4 with OpenCV, runs Canny, writes a segment GIF
+  artifact.
+- `assemble_gif`: reads segment GIF artifacts and either concatenates local
+  palettes or re-encodes with a global palette according to `assemble_mode`.
 
 ## Threading
 
@@ -64,18 +59,18 @@ effectively single-threaded:
 
 ## Configuration
 
-WorkerGo passes Canny thresholds into each slot process:
+WorkerGo passes Entry registration processing policy into each slot process:
 
 ```text
 FRAMEFLEET_CANNY_LOW_THRESHOLD
 FRAMEFLEET_CANNY_HIGH_THRESHOLD
 ```
 
-These come from WorkerGo env/config:
+These values come from Entry env/config:
 
 ```text
-WORKER_CANNY_LOW_THRESHOLD=180
-WORKER_CANNY_HIGH_THRESHOLD=360
+PROCESS_CANNY_LOW_THRESHOLD=180
+PROCESS_CANNY_HIGH_THRESHOLD=360
 ```
 
 Optional binary overrides:

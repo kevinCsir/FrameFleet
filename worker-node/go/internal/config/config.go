@@ -21,8 +21,6 @@ type Config struct {
 	DiskFreeBytes      int64
 	InputDir           string
 	SourceScanInterval time.Duration
-	CannyLowThreshold  int
-	CannyHighThreshold int
 }
 
 func FromEnv() Config {
@@ -41,8 +39,6 @@ func FromEnv() Config {
 		DiskFreeBytes:      int64FromEnv("WORKER_DISK_FREE_BYTES", 800*1000*1000),
 		InputDir:           stringFromEnv("WORKER_INPUT_DIR", "worker-node/data/input"),
 		SourceScanInterval: durationSecondsFromEnv("WORKER_SOURCE_SCAN_INTERVAL_SECONDS", 10*time.Second),
-		CannyLowThreshold:  intFromEnv("WORKER_CANNY_LOW_THRESHOLD", 80),
-		CannyHighThreshold: intFromEnv("WORKER_CANNY_HIGH_THRESHOLD", 160),
 	}
 }
 

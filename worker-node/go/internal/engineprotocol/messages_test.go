@@ -2,6 +2,7 @@ package engineprotocol
 
 import (
 	"encoding/json"
+	"framefleet/pkg/protocol"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,10 @@ func TestOperationSpecificExamples(t *testing.T) {
 	readExample(t, "assemble_gif.request.json", &assemble)
 	if assemble.Operation != OpAssembleGIF || len(assemble.Inputs) == 0 || assemble.Output == nil {
 		t.Fatalf("invalid assemble_gif request: %+v", assemble)
+	}
+	if assemble.AssembleMode != protocol.GIFAssembleModeLocalPaletteConcat {
+		t.Fatalf("assemble_gif assemble_mode = %q, want %q",
+			assemble.AssembleMode, protocol.GIFAssembleModeLocalPaletteConcat)
 	}
 
 	var splitResp Response

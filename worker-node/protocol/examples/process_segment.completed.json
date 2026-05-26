@@ -2,7 +2,7 @@
   "version": 1,
   "request_id": "req_segment_1",
   "type": "completed",
-  "artifact_name": "task_123.segment",
+  "artifact_name": "task_123.gif",
   "checksum": "sha256:artifact",
   "frame_count": 120,
   "duration_ms": 1530,

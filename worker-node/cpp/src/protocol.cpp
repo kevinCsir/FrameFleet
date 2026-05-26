@@ -37,6 +37,20 @@ std::int64_t optional_int64(const nlohmann::json& json, const char* key, std::in
     return json.at(key).get<std::int64_t>();
 }
 
+std::string optional_string(const nlohmann::json& json, const char* key, const std::string& fallback) {
+    if (!json.contains(key)) {
+        return fallback;
+    }
+    if (!json.at(key).is_string()) {
+        throw std::runtime_error(std::string("invalid string field: ") + key);
+    }
+    auto value = json.at(key).get<std::string>();
+    if (value.empty()) {
+        throw std::runtime_error(std::string("empty string field: ") + key);
+    }
+    return value;
+}
+
 FileRef parse_file_ref(const nlohmann::json& json, const char* field_name) {
     if (!json.is_object()) {
         throw std::runtime_error(std::string("invalid file ref field: ") + field_name);
@@ -55,6 +69,11 @@ FileRef parse_file_ref(const nlohmann::json& json, const char* field_name) {
     }
 
     return ref;
+}
+
+bool is_valid_assemble_mode(const std::string& mode) {
+    return mode == kGIFAssembleModeLocalPaletteConcat ||
+           mode == kGIFAssembleModeGlobalPaletteRecode;
 }
 
 void validate_request(const Request& request) {
@@ -93,6 +112,9 @@ void validate_request(const Request& request) {
         if (request.inputs.empty() || !request.output) {
             throw std::runtime_error("assemble_gif requires inputs and output");
         }
+        if (!is_valid_assemble_mode(request.assemble_mode)) {
+            throw std::runtime_error("unsupported assemble_mode: " + request.assemble_mode);
+        }
         return;
     }
 
@@ -129,6 +151,8 @@ Request parse_request_line(const std::string& line) {
     request.target_segment_size_bytes = optional_int64(json, "target_segment_size_bytes", 0);
     request.target_segment_duration_ms = optional_int64(json, "target_segment_duration_ms", 0);
     request.max_segments = optional_int(json, "max_segments", 0);
+    request.assemble_mode = optional_string(
+        json, "assemble_mode", kGIFAssembleModeLocalPaletteConcat);
     if (json.contains("input")) {
         request.input = parse_file_ref(json.at("input"), "input");
     }

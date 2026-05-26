@@ -10,6 +10,8 @@
 namespace framefleet_engine {
 
 constexpr int kProtocolVersion = 1;
+constexpr const char* kGIFAssembleModeLocalPaletteConcat = "local_palette_concat";
+constexpr const char* kGIFAssembleModeGlobalPaletteRecode = "global_palette_recode";
 
 struct FileRef {
     std::string mode;
@@ -25,6 +27,7 @@ struct Request {
     std::int64_t target_segment_size_bytes = 0;
     std::int64_t target_segment_duration_ms = 0;
     int max_segments = 0;
+    std::string assemble_mode = kGIFAssembleModeLocalPaletteConcat;
     std::optional<FileRef> input;
     std::vector<FileRef> inputs;
     std::optional<FileRef> output;

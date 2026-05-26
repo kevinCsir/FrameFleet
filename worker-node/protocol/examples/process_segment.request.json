@@ -9,7 +9,7 @@
   },
   "output": {
     "mode": "file",
-    "path": "worker-node/data/spool/artifacts/task_123.segment",
-    "name": "task_123.segment"
+    "path": "worker-node/data/spool/artifacts/task_123.gif",
+    "name": "task_123.gif"
   }
 }

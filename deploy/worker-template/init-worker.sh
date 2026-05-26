@@ -19,8 +19,6 @@ Common:
   --repo DIR                   FrameFleet repo path. Defaults to the current git root.
   --heartbeat-seconds N        Heartbeat interval. Defaults to 10.
   --scan-seconds N             Source input scan interval. Defaults to 10.
-  --canny-low N                Canny low threshold. Defaults to 80.
-  --canny-high N               Canny high threshold. Defaults to 160.
   --force                      Overwrite an existing worker directory.
   -h, --help                   Show this help.
 
@@ -42,8 +40,6 @@ slots="2"
 engine_path=""
 heartbeat_seconds="10"
 scan_seconds="10"
-canny_low="80"
-canny_high="160"
 force="0"
 
 while [[ $# -gt 0 ]]; do
@@ -86,14 +82,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --scan-seconds)
       scan_seconds="${2:?missing value for --scan-seconds}"
-      shift 2
-      ;;
-    --canny-low)
-      canny_low="${2:?missing value for --canny-low}"
-      shift 2
-      ;;
-    --canny-high)
-      canny_high="${2:?missing value for --canny-high}"
       shift 2
       ;;
     --force)
@@ -188,9 +176,6 @@ WORKER_HEARTBEAT_INTERVAL_SECONDS=${heartbeat_seconds}
 WORKER_SOURCE_SCAN_INTERVAL_SECONDS=${scan_seconds}
 WORKER_DISK_TOTAL_BYTES=1000000000
 WORKER_DISK_FREE_BYTES=800000000
-
-WORKER_CANNY_LOW_THRESHOLD=${canny_low}
-WORKER_CANNY_HIGH_THRESHOLD=${canny_high}
 EOF
 
 cat >"${worker_dir}/run.sh" <<EOF

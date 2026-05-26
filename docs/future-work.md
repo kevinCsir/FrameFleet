@@ -190,6 +190,8 @@ Important lifecycle details:
 - When all external segments complete, Entry creates one `assemble_gif` task.
 - The assemble worker should pull segment artifacts directly from segment
   workers.
+- `assemble_gif` should accept a mode flag so the worker can choose between
+  local-palette concatenation and global palette re-encoding for GIF inputs.
 - Final GIF location is derived as:
   `http://{result_worker_address}/results/{result_name}`.
 - Entry should only store metadata and should never proxy video or artifact

@@ -14,6 +14,7 @@ type StartAssembleGIFRequest struct {
 	AssembleTaskID string               `json:"assemble_task_id" binding:"required"`
 	Video          AssembleVideoInfo    `json:"video" binding:"required"`
 	Segments       []AssembleSegmentRef `json:"segments" binding:"required,min=1"`
+	AssembleMode   GIFAssembleMode      `json:"assemble_mode,omitempty"`
 }
 
 type AssembleVideoInfo struct {
@@ -31,6 +32,22 @@ type AssembleSegmentRef struct {
 	Checksum        string `json:"checksum,omitempty"`
 	FrameCount      int    `json:"frame_count" binding:"min=0"`
 	OutputSizeBytes int64  `json:"output_size_bytes" binding:"min=0"`
+}
+
+type GIFAssembleMode string
+
+const (
+	GIFAssembleModeLocalPaletteConcat  GIFAssembleMode = "local_palette_concat"
+	GIFAssembleModeGlobalPaletteRecode GIFAssembleMode = "global_palette_recode"
+)
+
+func NormalizeGIFAssembleMode(mode GIFAssembleMode) GIFAssembleMode {
+	switch mode {
+	case GIFAssembleModeLocalPaletteConcat, GIFAssembleModeGlobalPaletteRecode:
+		return mode
+	default:
+		return GIFAssembleModeLocalPaletteConcat
+	}
 }
 
 type StartAssembleGIFResponse struct {

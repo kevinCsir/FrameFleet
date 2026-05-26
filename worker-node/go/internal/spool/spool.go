@@ -40,7 +40,7 @@ func (m *Manager) TempUploadPath(taskID string) string {
 }
 
 func (m *Manager) ArtifactPath(taskID string) string {
-	return filepath.Join(m.root, "artifacts", taskID+".segment")
+	return filepath.Join(m.root, "artifacts", taskID+".gif")
 }
 
 func (m *Manager) ResultPath(resultName string) string {
@@ -48,7 +48,7 @@ func (m *Manager) ResultPath(resultName string) string {
 }
 
 func (m *Manager) AssembleArtifactPath(jobID string, taskID string) string {
-	return filepath.Join(m.root, "tmp", "assemble", jobID, taskID+".segment")
+	return filepath.Join(m.root, "tmp", "assemble", jobID, taskID+".gif")
 }
 
 func (m *Manager) OutgoingDir(jobID string) string {

@@ -13,9 +13,9 @@ FrameFleet 是一个分布式视频处理实验项目：把视频拆成多个时
 - C++ engine：WorkerGo 管理的本地 subprocess，通过 JSON Lines 协议通信。
 - 视频处理：
   - `split_video`: `ffprobe` + `ffmpeg` 拆分 mp4。
-  - `process_segment`: OpenCV Canny，输出红色轮廓透明 PNG 帧流。
-  - `assemble_gif`: FFAF artifact -> PNG frames -> ffmpeg 透明 GIF。
-- 一阶段 artifact 使用单文件 FFAF v1，Go 不解析其内容。
+  - `process_segment`: OpenCV Canny，输出一阶段 segment GIF artifact。
+  - `assemble_gif`: segment GIF artifact -> 最终透明 GIF，可按模式选择本地调色盘拼接或全局调色盘重编码。
+- 一阶段 artifact 是单文件 GIF，Go 不解析其内容。
 - 真实单机 smoke 和真实 4-worker cluster smoke。
 
 暂未实现或仍需生产化：
@@ -50,7 +50,7 @@ worker-node/
   go/internal/                   # WorkerGo 内部模块
   cmd/test-worker/               # 简单 register/heartbeat 测试客户端
   cpp/                           # C++ engine
-  protocol/                      # Go/C++ 示例协议和 FFAF 文档
+  protocol/                      # Go/C++ 示例协议
 
 pkg/protocol/                    # Entry/Worker 共享 HTTP 协议 DTO
 scripts/                         # smoke 测试脚本
@@ -168,8 +168,6 @@ WORKER_TOTAL_SLOTS=1 \
 WORKER_DATA_DIR=/tmp/framefleet-worker1/data \
 WORKER_INPUT_DIR=/tmp/framefleet-worker1/input \
 WORKER_ENGINE_BINARY=worker-node/cpp/build/framefleet-engine \
-WORKER_CANNY_LOW_THRESHOLD=180 \
-WORKER_CANNY_HIGH_THRESHOLD=360 \
 GOCACHE=/tmp/go-build \
 GOMODCACHE=/tmp/go/pkg/mod \
 go run ./worker-node/go/cmd/worker-agent
@@ -249,8 +247,6 @@ WORKER_TOTAL_SLOTS=4
 WORKER_DATA_DIR=worker-node/data
 WORKER_INPUT_DIR=worker-node/data/input
 WORKER_ENGINE_BINARY=worker-node/cpp/build/framefleet-engine
-WORKER_CANNY_LOW_THRESHOLD=180
-WORKER_CANNY_HIGH_THRESHOLD=360
 ```
 
 日志：
@@ -312,5 +308,5 @@ GET  /results/:result_name
 - internal/external 是 task 级别属性，不是 job 级别属性。
 - job 幂等 key 是 `source_worker_address + video_name`。
 - Go/CPP 协议不包含 job/task 概念；C++ 只知道 op 和文件路径。
-- Worker artifact 对 Go 不透明；C++ 使用 FFAF v1 读写 artifact。
+- Worker artifact 对 Go 不透明；C++ 使用 segment GIF 作为一阶段 artifact。
 - 公共 HTTP 协议结构放 `pkg/protocol`，不要在 Entry 和 Worker 两边重复定义。

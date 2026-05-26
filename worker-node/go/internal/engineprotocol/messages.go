@@ -1,5 +1,7 @@
 package engineprotocol
 
+import "framefleet/pkg/protocol"
+
 const Version = 1
 
 type Operation string
@@ -33,16 +35,17 @@ type FileRef struct {
 }
 
 type Request struct {
-	Version                 int       `json:"version"`
-	RequestID               string    `json:"request_id"`
-	Operation               Operation `json:"op"`
-	TargetSegmentSizeBytes  int64     `json:"target_segment_size_bytes,omitempty"`
-	TargetSegmentDurationMS int64     `json:"target_segment_duration_ms,omitempty"`
-	MaxSegments             int       `json:"max_segments,omitempty"`
-	Input                   *FileRef  `json:"input,omitempty"`
-	Inputs                  []FileRef `json:"inputs,omitempty"`
-	Output                  *FileRef  `json:"output,omitempty"`
-	OutputDir               string    `json:"output_dir,omitempty"`
+	Version                 int                      `json:"version"`
+	RequestID               string                   `json:"request_id"`
+	Operation               Operation                `json:"op"`
+	TargetSegmentSizeBytes  int64                    `json:"target_segment_size_bytes,omitempty"`
+	TargetSegmentDurationMS int64                    `json:"target_segment_duration_ms,omitempty"`
+	MaxSegments             int                      `json:"max_segments,omitempty"`
+	AssembleMode            protocol.GIFAssembleMode `json:"assemble_mode,omitempty"`
+	Input                   *FileRef                 `json:"input,omitempty"`
+	Inputs                  []FileRef                `json:"inputs,omitempty"`
+	Output                  *FileRef                 `json:"output,omitempty"`
+	OutputDir               string                   `json:"output_dir,omitempty"`
 }
 
 type SegmentFile struct {

@@ -17,23 +17,25 @@ type Config struct {
 type State struct {
 	mu sync.RWMutex
 
-	cfg          Config
-	workerID     string
-	splitPolicy  protocol.SplitPolicy
-	backpressure protocol.BackpressureStatus
-	runningTasks map[string]protocol.TaskType
+	cfg              Config
+	workerID         string
+	splitPolicy      protocol.SplitPolicy
+	processingPolicy protocol.ProcessingPolicy
+	backpressure     protocol.BackpressureStatus
+	runningTasks     map[string]protocol.TaskType
 }
 
 func New(cfg Config) *State {
 	return &State{cfg: cfg, runningTasks: make(map[string]protocol.TaskType)}
 }
 
-func (s *State) SetRegistration(workerID string, splitPolicy protocol.SplitPolicy) {
+func (s *State) SetRegistration(workerID string, splitPolicy protocol.SplitPolicy, processingPolicy protocol.ProcessingPolicy) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.workerID = workerID
 	s.splitPolicy = splitPolicy
+	s.processingPolicy = normalizeProcessingPolicy(processingPolicy)
 }
 
 func (s *State) WorkerID() string {
@@ -46,6 +48,23 @@ func (s *State) SplitPolicy() protocol.SplitPolicy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.splitPolicy
+}
+
+func (s *State) ProcessingPolicy() protocol.ProcessingPolicy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.processingPolicy
+}
+
+func normalizeProcessingPolicy(policy protocol.ProcessingPolicy) protocol.ProcessingPolicy {
+	if policy.CannyLowThreshold <= 0 {
+		policy.CannyLowThreshold = 80
+	}
+	if policy.CannyHighThreshold <= 0 {
+		policy.CannyHighThreshold = 160
+	}
+	policy.AssembleMode = protocol.NormalizeGIFAssembleMode(policy.AssembleMode)
+	return policy
 }
 
 func (s *State) SetBackpressure(status protocol.BackpressureStatus) {

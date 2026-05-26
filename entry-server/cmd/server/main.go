@@ -33,6 +33,11 @@ func main() {
 		}
 	}()
 
+	processingPolicy := protocol.ProcessingPolicy{
+		CannyLowThreshold:  intFromEnv("PROCESS_CANNY_LOW_THRESHOLD", 80),
+		CannyHighThreshold: intFromEnv("PROCESS_CANNY_HIGH_THRESHOLD", 160),
+		AssembleMode:       gifAssembleModeFromEnv("GIF_ASSEMBLE_MODE", protocol.GIFAssembleModeLocalPaletteConcat),
+	}
 	workerRegistry := service.NewWorkerRegistry(appLogger)
 	server := entryserver.New(workerRegistry, entryserver.HeartbeatConfig{
 		Timeout:       durationFromEnvSeconds("WORKER_HEARTBEAT_TIMEOUT_SECONDS", 30*time.Second),
@@ -41,7 +46,7 @@ func main() {
 		TargetSegmentSizeBytes:  int64FromEnv("SPLIT_TARGET_SEGMENT_SIZE_BYTES", 0),
 		TargetSegmentDurationMS: int64FromEnv("SPLIT_TARGET_SEGMENT_DURATION_MS", 3_000),
 		MaxSegments:             intFromEnv("SPLIT_MAX_SEGMENTS", 0),
-	}, appLogger)
+	}, processingPolicy, appLogger)
 
 	appLogger.Info("entry server starting",
 		"event", "entry_server_start",
@@ -51,6 +56,9 @@ func main() {
 		"split_target_segment_size_bytes", server.SplitPolicy().TargetSegmentSizeBytes,
 		"split_target_segment_duration_ms", server.SplitPolicy().TargetSegmentDurationMS,
 		"split_max_segments", server.SplitPolicy().MaxSegments,
+		"processing_canny_low_threshold", server.ProcessingPolicy().CannyLowThreshold,
+		"processing_canny_high_threshold", server.ProcessingPolicy().CannyHighThreshold,
+		"processing_assemble_mode", server.ProcessingPolicy().AssembleMode,
 	)
 
 	if err := server.Run(addr); err != nil {
@@ -97,4 +105,16 @@ func int64FromEnv(key string, fallback int64) int64 {
 		return fallback
 	}
 	return value
+}
+
+func gifAssembleModeFromEnv(key string, fallback protocol.GIFAssembleMode) protocol.GIFAssembleMode {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	mode := protocol.NormalizeGIFAssembleMode(protocol.GIFAssembleMode(raw))
+	if mode == protocol.GIFAssembleModeLocalPaletteConcat && raw != string(protocol.GIFAssembleModeLocalPaletteConcat) {
+		return fallback
+	}
+	return mode
 }

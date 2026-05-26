@@ -111,8 +111,9 @@ func (h *Handler) runAssembleGIF(req protocol.StartAssembleGIFRequest, workerID 
 	defer h.state.FinishTask(req.AssembleTaskID)
 
 	engineResp, err := lease.Call(ctx, engineprotocol.Request{
-		Operation: engineprotocol.OpAssembleGIF,
-		Inputs:    inputs,
+		Operation:    engineprotocol.OpAssembleGIF,
+		AssembleMode: req.AssembleMode,
+		Inputs:       inputs,
 		Output: &engineprotocol.FileRef{
 			Mode: engineprotocol.DataModeFile,
 			Path: outputPath,
